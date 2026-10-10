@@ -1,0 +1,30 @@
+services:
+  cassandra:
+    image: cassandra:4.1
+    container_name: clickstream-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=ClickstreamCluster
+      - MAX_HEAP_SIZE=512M      # giảm RAM cho máy cá nhân
+      - HEAP_NEWSIZE=128M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: clickstream-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+volumes:
+  cassandra_data:
+  redis_data:
