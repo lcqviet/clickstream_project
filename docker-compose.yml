@@ -6,8 +6,8 @@ services:
       - "9042:9042"
     environment:
       - CASSANDRA_CLUSTER_NAME=ClickstreamCluster
-      - MAX_HEAP_SIZE=512M      # giảm RAM cho máy cá nhân
-      - HEAP_NEWSIZE=128M
+      - MAX_HEAP_SIZE=1G        # đủ cho ghi 1 triệu+ sự kiện trên máy cá nhân
+      - HEAP_NEWSIZE=256M
     volumes:
       - cassandra_data:/var/lib/cassandra
     healthcheck:

@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
 """query_cli.py - Công cụ dòng lệnh truy vấn dữ liệu clickstream (Cassandra + Redis)."""
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+from cassandra.concurrent import execute_concurrent_with_args
 
 from common import (
     KEYSPACE,
@@ -38,6 +39,8 @@ class ClickstreamQuery:
             "SELECT product_id, event_type, cnt FROM product_stats_by_day WHERE event_date = ?")
         self.q_keyword_day = self.cass.prepare(
             "SELECT search_keyword, cnt FROM keyword_stats_by_day WHERE event_date = ?")
+        self.q_count_partition = self.cass.prepare(
+            "SELECT COUNT(*) FROM events_by_user WHERE user_id = ? AND event_date = ?")
 
     # Q0 - Redis: 5 sản phẩm xem gần nhất (mới nhất trước)
     def recent_views(self, user_id):
@@ -74,6 +77,32 @@ class ClickstreamQuery:
     def keyword_stats(self, day):
         rows = [(r.search_keyword, r.cnt) for r in self.cass.execute(self.q_keyword_day, (day,))]
         return sorted(rows, key=lambda x: x[1], reverse=True)
+
+    # Q5 - Cassandra: tổng quan số sự kiện theo ngày/loại (cộng từ các bảng counter, tức thời)
+    def overview(self, days):
+        today, result = today_vn(), []
+        for offset in range(days):
+            day = today - timedelta(days=offset)
+            counts = defaultdict(int)
+            for r in self.cass.execute(self.q_product_day, (day,)):
+                counts[r.event_type] += r.cnt
+            for r in self.cass.execute(self.q_keyword_day, (day,)):
+                counts["search"] += r.cnt
+            result.append((day, counts))
+        return list(reversed(result))  # cũ -> mới
+
+    # Q6 - Cassandra: đếm chính xác số hàng của events_by_user bằng cách đếm từng partition
+    # (tránh COUNT(*) toàn bảng dễ bị timeout). Cần biết số user và số ngày đã giả lập.
+    def exact_count(self, n_users, days):
+        today = today_vn()
+        params = [(f"U{i:04d}", today - timedelta(days=d))
+                  for i in range(1, n_users + 1) for d in range(days)]
+        total = 0
+        for ok, result in execute_concurrent_with_args(
+                self.cass, self.q_count_partition, params, concurrency=64):
+            if ok:
+                total += result.one()[0]
+        return total, len(params)
 
     def close(self):
         self.cass.cluster.shutdown()
@@ -179,6 +208,33 @@ def menu_keywords(svc):
         print(f"  {rank:>2}. {kw:<25}{cnt:>6} lượt")
 
 
+def menu_overview(svc):
+    days = int(ask("Số ngày gần nhất (dữ liệu rải 7 ngày -> nhập 8)", "8"))
+    rows = svc.overview(days)
+    print("\n[Cassandra] Tổng quan số sự kiện đã ghi (cộng từ bảng counter)")
+    print(f"  {'Ngày':<12}{'click':>10}{'view':>10}{'add_to_cart':>13}{'search':>10}{'Tổng':>12}")
+    grand = defaultdict(int)
+    for day, c in rows:
+        total = sum(c.values())
+        if total == 0:
+            continue
+        print(f"  {str(day):<12}{c['click']:>10,}{c['view']:>10,}{c['add_to_cart']:>13,}"
+              f"{c['search']:>10,}{total:>12,}")
+        for k, v in c.items():
+            grand[k] += v
+    print(f"  {'TỔNG':<12}{grand['click']:>10,}{grand['view']:>10,}{grand['add_to_cart']:>13,}"
+          f"{grand['search']:>10,}{sum(grand.values()):>12,}")
+
+
+def menu_exact_count(svc):
+    n_users = int(ask("Số user đã giả lập (--users)", "1000"))
+    days = int(ask("Số ngày cần quét (dữ liệu rải 7 ngày -> nhập 8)", "8"))
+    print("Đang đếm theo từng partition (user, ngày), vui lòng đợi...")
+    total, n_part = svc.exact_count(n_users, days)
+    print(f"\n[Cassandra] events_by_user có {total:,} hàng (quét {n_part:,} partition). "
+          f"events_by_session lưu cùng số hàng này.")
+
+
 MENU = """
 ================ CLICKSTREAM QUERY TOOL ================
  1. 5 sản phẩm khách hàng vừa xem gần nhất        (Redis)
@@ -186,6 +242,8 @@ MENU = """
  3. Hành trình clickstream của một phiên          (Cassandra)
  4. Thống kê tương tác sản phẩm theo ngày         (Cassandra)
  5. Từ khóa tìm kiếm phổ biến theo ngày           (Cassandra)
+ 6. Tổng quan số sự kiện đã ghi (theo ngày/loại)  (Cassandra)
+ 7. Đếm chính xác số hàng bảng events_by_user     (Cassandra)
  0. Thoát
 ========================================================"""
 
@@ -193,7 +251,8 @@ MENU = """
 def main():
     svc = ClickstreamQuery()
     actions = {"1": menu_recent, "2": menu_history, "3": menu_session,
-               "4": menu_products, "5": menu_keywords}
+               "4": menu_products, "5": menu_keywords,
+               "6": menu_overview, "7": menu_exact_count}
     try:
         while True:
             print(MENU)

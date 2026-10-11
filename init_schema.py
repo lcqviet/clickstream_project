@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """init_schema.py - Tạo keyspace và các bảng Cassandra từ file schema.cql."""
 import re
 from pathlib import Path

@@ -1,2 +1,4 @@
-cassandra-driver>=3.29.0
+cassandra-driver>=3.30.0
 redis>=4.5.0
+# Python 3.12+ đã bỏ module asyncore, driver cần gói này để có event loop mặc định
+pyasyncore; python_version >= "3.12"

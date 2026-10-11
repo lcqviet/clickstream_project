@@ -1,5 +1,7 @@
 # Hệ thống lưu vết hành vi người dùng trên website TMĐT (Cassandra + Redis)
 
+Tài liệu thiết kế đầy đủ (kiến trúc, thiết kế CSDL): [`docs/THIET_KE.md`](docs/THIET_KE.md). Sơ đồ kiến trúc: `docs/kien_truc.png` / `docs/kien_truc.svg`.
+
 ## Cấu trúc thư mục
 
 | File | Vai trò |
@@ -8,56 +10,71 @@
 | `schema.cql` | Keyspace và 4 bảng Cassandra |
 | `init_schema.py` | Chạy `schema.cql` bằng Python (không cần cqlsh) |
 | `common.py` | Cấu hình, danh mục sản phẩm mẫu, hàm kết nối |
-| `simulator.py` | Giả lập website: sinh và ghi sự kiện vào Cassandra + Redis |
+| `simulator.py` | Giả lập website: ghi sự kiện vào Cassandra + Redis (chế độ bulk 1 triệu+ và realtime) |
 | `query_cli.py` | Chương trình truy vấn dữ liệu (menu tương tác) |
+| `docs/` | Tài liệu thiết kế và sơ đồ kiến trúc |
 
-## Cách chạy
+## Cách chạy (Windows)
 
-```bash
-# 1. Khởi động CSDL (Cassandra mất khoảng 1-2 phút để sẵn sàng)
+```bat
+:: 1. Khởi động CSDL (Cassandra mất khoảng 1-2 phút để healthy)
 docker compose up -d
-docker compose ps            # đợi cassandra ở trạng thái "healthy"
+docker compose ps
 
-# 2. Cài thư viện Python (khuyến nghị Python 3.9 - 3.12)
+:: 2. Tạo và kích hoạt môi trường ảo, cài thư viện
 python -m venv .venv
-source .venv/bin/activate    # Windows: .venv\Scripts\activate
+.venv\Scripts\activate
 pip install -r requirements.txt
 
-# 3. Tạo keyspace và bảng
+:: 3. Tạo keyspace và bảng
 python init_schema.py
 
-# 4. Ghi dữ liệu giả lập
-python simulator.py --reset --users 50 --sessions 300 --days 7     # dữ liệu lịch sử 7 ngày
-python simulator.py --realtime --sessions 0 --delay 0.5            # (tuỳ chọn) luồng trực tiếp, Ctrl+C để dừng
+:: 4. Ghi 1.000.000 sự kiện (mặc định: 1000 user, rải 7 ngày)
+python simulator.py --reset
 
-# 5. Truy vấn
+:: 5. Truy vấn
 python query_cli.py
 ```
 
-Mã user giả lập có dạng `U0001` ... `U0050`.
+Linux/macOS: thay bước kích hoạt bằng `source .venv/bin/activate`.
 
-## Kiểm tra nhanh bằng công cụ gốc
+## Các tuỳ chọn của simulator
 
-```bash
-docker exec -it clickstream-cassandra cqlsh -e "SELECT * FROM ecommerce_tracking.events_by_user LIMIT 5;"
-docker exec -it clickstream-redis redis-cli ZREVRANGE user:U0001:recent_views 0 4 WITHSCORES
+```bat
+python simulator.py --reset --events 2000000 --users 5000 --days 14   :: lượng dữ liệu lớn hơn
+python simulator.py --realtime --delay 0.5                            :: luồng trực tiếp, Ctrl+C để dừng
+python simulator.py --reset --events 10000 --users 50                 :: chạy thử nhanh
 ```
 
-## Tóm tắt thiết kế
+Mỗi sự kiện tạo 2 hàng log (`events_by_user`, `events_by_session`), nên 1.000.000 sự kiện tương ứng 2.000.000 hàng trong Cassandra.
+Tốc độ ghi phụ thuộc cấu hình máy và Docker. Nếu gặp lỗi timeout, giảm `--concurrency` (ví dụ 32) hoặc tăng RAM cho Docker.
 
-- **Redis**: Sorted Set `user:{id}:recent_views`, member = `product_id`, score = timestamp (ms).
-  Mỗi sự kiện `view`: `ZADD GT` -> `ZREMRANGEBYRANK key 0 -6` -> `EXPIRE 30 ngày`. Đọc bằng `ZREVRANGE key 0 4`.
-- **Cassandra**:
-  - `events_by_user`: partition `(user_id, event_date)`, clustering `event_time DESC`, lịch sử theo user.
-  - `events_by_session`: partition `session_id`, clustering `event_time ASC`, hành trình một phiên.
-  - `product_stats_by_day`, `keyword_stats_by_day`: bảng counter phục vụ thống kê.
-- Ngày (`event_date`) tính theo giờ Việt Nam (UTC+7), timestamp lưu UTC.
+## Chứng minh đã đủ 1.000.000 bản ghi
 
-## Lưu ý và hướng mở rộng
+Trong `python query_cli.py`:
+- Chức năng **6**: tổng số sự kiện theo ngày và loại (cộng từ bảng counter, kết quả tức thời).
+- Chức năng **7**: đếm chính xác số hàng của `events_by_user` bằng cách đếm từng partition.
 
-- `SimpleStrategy` với `replication_factor = 1` chỉ để chạy thử trên một node. Triển khai thật dùng `NetworkTopologyStrategy`, RF = 3.
-- Bảng counter có partition theo ngày nên các lượt ghi cùng ngày dồn vào một partition (hot partition khi traffic rất lớn).
-  Có thể chia nhỏ thêm theo giờ hoặc theo shard, hoặc dùng Spark để tổng hợp từ `events_by_user`.
-- Có thể dùng `TimeWindowCompactionStrategy` cho bảng log và đặt `default_time_to_live` nếu chỉ cần giữ log trong một khoảng thời gian.
-- Trong thực tế, simulator được thay bằng một API thu thập sự kiện (hoặc Kafka) đứng giữa website và CSDL.
-- Nếu gặp lỗi liên quan `asyncore` trên Python 3.12+, hãy nâng `cassandra-driver` lên bản mới nhất hoặc dùng Python 3.11.
+Kiểm tra nhanh bằng công cụ gốc:
+
+```bat
+docker exec -it clickstream-cassandra cqlsh -e "SELECT * FROM ecommerce_tracking.events_by_user LIMIT 5;"
+docker exec -it clickstream-redis redis-cli ZREVRANGE user:U0001:recent_views 0 4 WITHSCORES
+docker exec -it clickstream-cassandra nodetool tablestats ecommerce_tracking.events_by_user
+```
+
+Lưu ý: `SELECT COUNT(*)` trên toàn bảng hàng triệu hàng thường bị timeout trong Cassandra, nên dùng chức năng 6 hoặc 7.
+
+## Gợi ý demo
+
+1. Chạy `simulator.py --realtime` ở terminal 1.
+2. Mở `query_cli.py` ở terminal 2, chọn chức năng 1 với `U0001`... để xem danh sách 5 sản phẩm thay đổi theo thời gian thực.
+3. Dùng chức năng 2, 3, 4, 5 để minh họa các truy vấn phân tích.
+
+Mã user giả lập có dạng `U0001` đến `U1000` (theo `--users`).
+
+## Xử lý sự cố
+
+- Lỗi `Unable to load a default connection class` trên Python 3.12+: cần `pip install pyasyncore` (đã có trong `requirements.txt`).
+- Lỗi chạy bằng nút Run báo `/usr/bin/env`: chạy bằng lệnh `python <file>.py` trong terminal.
+- Muốn xóa sạch và làm lại: `python simulator.py --reset ...`, hoặc `docker compose down -v` để xóa luôn volume.
