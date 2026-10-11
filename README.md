@@ -11,7 +11,8 @@ Tài liệu thiết kế đầy đủ (kiến trúc, thiết kế CSDL): [`docs/
 | `init_schema.py` | Chạy `schema.cql` bằng Python (không cần cqlsh) |
 | `common.py` | Cấu hình, danh mục sản phẩm mẫu, hàm kết nối |
 | `simulator.py` | Giả lập website: ghi sự kiện vào Cassandra + Redis (chế độ bulk 1 triệu+ và realtime) |
-| `query_cli.py` | Chương trình truy vấn dữ liệu (menu tương tác) |
+| `query_gui.py` | **Giao diện đồ họa (Tkinter)** để truy vấn dữ liệu, 7 tab tương ứng 7 chức năng |
+| `query_cli.py` | Chương trình truy vấn dạng dòng lệnh (menu); `query_gui.py` dùng lại lớp truy vấn của file này |
 | `docs/` | Tài liệu thiết kế và sơ đồ kiến trúc |
 
 ## Cách chạy (Windows)
@@ -32,7 +33,10 @@ python init_schema.py
 :: 4. Ghi 1.000.000 sự kiện (mặc định: 1000 user, rải 7 ngày)
 python simulator.py --reset
 
-:: 5. Truy vấn
+:: 5. Truy vấn bằng giao diện đồ họa
+python query_gui.py
+
+:: (hoặc bản dòng lệnh)
 python query_cli.py
 ```
 
@@ -72,6 +76,14 @@ Lưu ý: `SELECT COUNT(*)` trên toàn bảng hàng triệu hàng thường bị
 3. Dùng chức năng 2, 3, 4, 5 để minh họa các truy vấn phân tích.
 
 Mã user giả lập có dạng `U0001` đến `U1000` (theo `--users`).
+
+## Giao diện đồ họa (`query_gui.py`)
+
+Cửa sổ gồm 7 tab: sản phẩm vừa xem (Redis), lịch sử hành vi, hành trình phiên, thống kê sản phẩm, từ khóa tìm kiếm, tổng quan sự kiện, đếm chính xác số hàng.
+- Nhấn Enter trong ô nhập hoặc nút **Truy vấn** để chạy; truy vấn chạy nền nên cửa sổ không bị treo.
+- Ở tab 2, nhấp đúp vào một dòng để chuyển sang tab 3 và xem hành trình của phiên đó.
+- Nhấp vào tiêu đề cột để sắp xếp bảng; tab 4, 5, 6 có biểu đồ cột.
+- Nếu báo `No module named tkinter`: chạy lại trình cài Python, chọn Modify và tick **tcl/tk and IDLE**.
 
 ## Xử lý sự cố
 
