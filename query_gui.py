@@ -18,6 +18,7 @@ import uuid
 from common import (
     CASSANDRA_HOSTS,
     CASSANDRA_PORT,
+    PRODUCTS,
     REDIS_HOST,
     REDIS_PORT,
     RECENT_VIEW_LIMIT,
@@ -100,7 +101,8 @@ class App(tk.Tk):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
         for build in (self._tab_recent, self._tab_history, self._tab_session, self._tab_products,
-                      self._tab_keywords, self._tab_overview, self._tab_count):
+                      self._tab_keywords, self._tab_overview, self._tab_count,
+                      self._tab_trend, self._tab_sessions):
             build()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -565,6 +567,104 @@ class App(tk.Tk):
             self._default_error(err)
 
         self.run_async(lambda: self.svc.exact_count(users, days), done, failed)
+
+    # =====================================================================
+    # Chức năng 8: xu hướng tương tác của một sản phẩm theo ngày (Cassandra)
+    # =====================================================================
+    def _tab_trend(self):
+        tab = self._tab("8. Xu hướng SP")
+        choices = [f"{pid} - {info[0]}" for pid, info in PRODUCTS.items()]
+        self.v_t_prod = tk.StringVar(value=choices[0])
+        self.v_t_days = tk.StringVar(value="8")
+        row = self._row(tab)
+        self._field(row, "Sản phẩm:", self.v_t_prod, 34, "combo", values=choices)
+        self._field(row, "Số ngày gần nhất:", self.v_t_days, 5, "spin", lo=1, hi=60)
+        ttk.Button(row, text="Truy vấn", command=self.do_trend).pack(side="left")
+        ttk.Label(tab, text="Nguồn: bảng counter product_stats_by_day (khóa event_date + product_id).  "
+                            "Dữ liệu rải 7 ngày thì nhập 8 để bao đủ các ngày.",
+                  style="Hint.TLabel").pack(anchor="w", pady=(0, 8))
+        self.t_trend = self._tree(tab, [("day", "Ngày", 130, "center"), ("view", "View", 100, "e"),
+                                        ("click", "Click", 100, "e"), ("cart", "Giỏ hàng", 110, "e"),
+                                        ("rate", "Giỏ/View", 110, "e")], height=9)
+        self.c_trend = BarChart(tab, color="#7F77DD")
+        self.c_trend.pack(fill="x", pady=(10, 0))
+
+    @guarded
+    def do_trend(self):
+        pid = self.v_t_prod.get().split(" - ")[0].strip()
+        if pid not in PRODUCTS:
+            raise ValueError("Vui lòng chọn một sản phẩm trong danh sách.")
+        days = self._read_int(self.v_t_days, "Số ngày", 1, 60)
+
+        def done(result):
+            rows, grand, chart = [], defaultdict(int), []
+            for day, c in result:
+                if not any(c.values()):
+                    continue
+                rate = f"{c['add_to_cart'] / c['view'] * 100:.1f}%" if c["view"] else "-"
+                rows.append((str(day), f"{c['view']:,}", f"{c['click']:,}", f"{c['add_to_cart']:,}", rate))
+                chart.append((str(day), c["view"]))
+                for k, v in c.items():
+                    grand[k] += v
+            if rows:
+                rate = f"{grand['add_to_cart'] / grand['view'] * 100:.1f}%" if grand["view"] else "-"
+                rows.append(("TỔNG", f"{grand['view']:,}", f"{grand['click']:,}",
+                             f"{grand['add_to_cart']:,}", rate))
+            self._fill(self.t_trend, rows, total_last=True)
+            self.c_trend.set_data(chart, f"Lượt xem {product_name(pid)} theo ngày" if rows else "")
+            if not rows:
+                messagebox.showinfo("Không có dữ liệu",
+                                    f"Không có dữ liệu của sản phẩm {pid} trong {days} ngày gần nhất.", parent=self)
+
+        self.run_async(lambda: self.svc.product_trend(pid, days), done)
+
+    # =====================================================================
+    # Chức năng 9: các phiên truy cập của một khách hàng trong ngày (Cassandra)
+    # =====================================================================
+    def _tab_sessions(self):
+        tab = self._tab("9. Phiên khách hàng")
+        self.v_u_user = tk.StringVar(value="U0001")
+        self.v_u_day = tk.StringVar(value=str(today_vn()))
+        row = self._row(tab)
+        entry = self._field(row, "Mã khách hàng:", self.v_u_user, 12)
+        entry.bind("<Return>", lambda _e: self.do_sessions())
+        entry = self._field(row, "Ngày (YYYY-MM-DD):", self.v_u_day, 12)
+        entry.bind("<Return>", lambda _e: self.do_sessions())
+        ttk.Button(row, text="Truy vấn", command=self.do_sessions).pack(side="left")
+        self.l_sessions = ttk.Label(tab, text="Nguồn: bảng events_by_user (khóa user_id + event_date), gom theo session_id.  "
+                                              "Nhấp đúp vào một dòng để xem hành trình của phiên đó.",
+                                    style="Hint.TLabel")
+        self.l_sessions.pack(anchor="w", pady=(0, 8))
+        self.t_sessions = self._tree(tab, [("start", "Bắt đầu", 160, "center"), ("sec", "Kéo dài (giây)", 120, "e"),
+                                           ("events", "Số sự kiện", 100, "e"), ("views", "View", 70, "e"),
+                                           ("carts", "Giỏ hàng", 90, "e"), ("device", "Thiết bị", 80, "center"),
+                                           ("session", "Session ID", 290, "w")])
+        self.t_sessions.bind("<Double-1>", self._sessions_open_session)
+
+    @guarded
+    def do_sessions(self):
+        user = self.v_u_user.get().strip()
+        if not user:
+            raise ValueError("Vui lòng nhập mã khách hàng, ví dụ U0001.")
+        day = self._read_day(self.v_u_day)
+
+        def done(sessions):
+            self._fill(self.t_sessions, [(fmt_time(s["start"]), f"{s['seconds']:,}", s["events"], s["views"],
+                                          s["carts"], s["device"], str(s["session_id"])) for s in sessions])
+            self.l_sessions.configure(
+                text=(f"{user} ngày {day}: {len(sessions)} phiên (mới nhất trước).  "
+                      "Nhấp đúp vào một dòng để xem hành trình của phiên đó.")
+                if sessions else f"Không có dữ liệu của khách hàng {user} trong ngày {day}.")
+
+        self.run_async(lambda: self.svc.user_sessions(user, day), done)
+
+    def _sessions_open_session(self, _event):
+        selected = self.t_sessions.selection()
+        if not selected:
+            return
+        self.v_s_id.set(self.t_sessions.item(selected[0], "values")[6])
+        self.nb.select(self.tab_session)
+        self.do_session()
 
 
 def main():

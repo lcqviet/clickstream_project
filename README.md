@@ -85,6 +85,24 @@ Cửa sổ gồm 7 tab: sản phẩm vừa xem (Redis), lịch sử hành vi, h�
 - Nhấp vào tiêu đề cột để sắp xếp bảng; tab 4, 5, 6 có biểu đồ cột.
 - Nếu báo `No module named tkinter`: chạy lại trình cài Python, chọn Modify và tick **tcl/tk and IDLE**.
 
+## Hai truy vấn bổ sung (chức năng 8 và 9)
+
+Hai truy vấn này được thêm vào `query_cli.py` (menu 8, 9) và `query_gui.py` (tab 8, 9). Chúng chỉ đọc dữ liệu từ các bảng đã có, không thay đổi `schema.cql`, `simulator.py` hay dữ liệu đã ghi.
+
+| Chức năng | Kết quả | Bảng và khóa truy vấn |
+|---|---|---|
+| 8. Xu hướng tương tác của một sản phẩm theo ngày | View, click, add_to_cart và tỷ lệ giỏ/view của một sản phẩm qua N ngày gần nhất (có biểu đồ cột ở tab 8) | `product_stats_by_day` (`event_date` + `product_id`) |
+| 9. Các phiên truy cập của một khách hàng trong ngày | Mỗi phiên: giờ bắt đầu, thời lượng, số sự kiện, số view, số lần thêm giỏ, thiết bị, Session ID | `events_by_user` (`user_id` + `event_date`), gom theo `session_id` |
+
+CQL tương ứng:
+
+```sql
+SELECT event_type, cnt FROM product_stats_by_day WHERE event_date = ? AND product_id = ?;
+SELECT session_id, event_time, event_type, device FROM events_by_user WHERE user_id = ? AND event_date = ?;
+```
+
+Ở chức năng 9, nhấp đúp vào một dòng để chuyển sang chức năng 3 và xem hành trình của phiên đó. Phiên kéo dài qua nửa đêm (giờ VN) chỉ hiện phần thuộc ngày được chọn.
+
 ## Xử lý sự cố
 
 - Lỗi `Unable to load a default connection class` trên Python 3.12+: cần `pip install pyasyncore` (đã có trong `requirements.txt`).

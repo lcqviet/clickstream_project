@@ -7,6 +7,7 @@ from cassandra.concurrent import execute_concurrent_with_args
 
 from common import (
     KEYSPACE,
+    PRODUCTS,
     RECENT_VIEW_LIMIT,
     VN_TZ,
     connect_cassandra,
@@ -41,6 +42,13 @@ class ClickstreamQuery:
             "SELECT search_keyword, cnt FROM keyword_stats_by_day WHERE event_date = ?")
         self.q_count_partition = self.cass.prepare(
             "SELECT COUNT(*) FROM events_by_user WHERE user_id = ? AND event_date = ?")
+
+        # Hai truy vấn bổ sung (Q7, Q8): đọc từ các bảng đã có, không thay đổi schema
+        self.q_product_one_day = self.cass.prepare(
+            "SELECT event_type, cnt FROM product_stats_by_day WHERE event_date = ? AND product_id = ?")
+        self.q_user_sessions = self.cass.prepare(
+            "SELECT session_id, event_time, event_type, device FROM events_by_user "
+            "WHERE user_id = ? AND event_date = ?")
 
     # Q0 - Redis: 5 sản phẩm xem gần nhất (mới nhất trước)
     def recent_views(self, user_id):
@@ -103,6 +111,41 @@ class ClickstreamQuery:
             if ok:
                 total += result.one()[0]
         return total, len(params)
+
+    # Q7 - Cassandra: xu hướng tương tác (view/click/add_to_cart) của MỘT sản phẩm qua N ngày gần nhất
+    # Truy vấn theo khóa partition (event_date) + cột clustering đầu tiên (product_id) của bảng counter.
+    def product_trend(self, product_id, days):
+        today, result = today_vn(), []
+        for offset in range(days):
+            day = today - timedelta(days=offset)
+            counts = defaultdict(int)
+            for r in self.cass.execute(self.q_product_one_day, (day, product_id)):
+                counts[r.event_type] = r.cnt
+            result.append((day, counts))
+        return list(reversed(result))  # cũ -> mới
+
+    # Q8 - Cassandra: các phiên truy cập của một user trong một ngày (gom theo session_id, mới nhất trước)
+    # Chỉ đọc đúng 1 partition (user_id, event_date) của events_by_user.
+    # Lưu ý: phiên kéo dài qua nửa đêm (giờ VN) chỉ hiện phần thuộc ngày được chọn.
+    def user_sessions(self, user_id, day):
+        sessions = {}
+        for r in self.cass.execute(self.q_user_sessions, (user_id, day)):
+            s = sessions.get(r.session_id)
+            if s is None:
+                s = sessions[r.session_id] = {
+                    "session_id": r.session_id, "device": r.device, "start": r.event_time,
+                    "end": r.event_time, "events": 0, "views": 0, "carts": 0}
+            s["events"] += 1
+            if r.event_type == "view":
+                s["views"] += 1
+            elif r.event_type == "add_to_cart":
+                s["carts"] += 1
+            s["start"] = min(s["start"], r.event_time)
+            s["end"] = max(s["end"], r.event_time)
+        result = sorted(sessions.values(), key=lambda s: s["start"], reverse=True)
+        for s in result:
+            s["seconds"] = int((s["end"] - s["start"]).total_seconds())
+        return result
 
     def close(self):
         self.cass.cluster.shutdown()
@@ -235,6 +278,42 @@ def menu_exact_count(svc):
           f"events_by_session lưu cùng số hàng này.")
 
 
+def menu_product_trend(svc):
+    product_id = ask("Mã sản phẩm (P001 - P015)", "P001").upper()
+    if product_id not in PRODUCTS:
+        raise ValueError(f"mã sản phẩm phải thuộc {sorted(PRODUCTS)}")
+    days = int(ask("Số ngày gần nhất (dữ liệu rải 7 ngày -> nhập 8)", "8"))
+    rows = [(day, c) for day, c in svc.product_trend(product_id, days) if any(c.values())]
+    if not rows:
+        print("Không có dữ liệu cho sản phẩm này.")
+        return
+    print(f"\n[Cassandra] Xu hướng tương tác của {product_id} {product_name(product_id)} "
+          f"({days} ngày gần nhất)")
+    print(f"  {'Ngày':<12}{'View':>8}{'Click':>8}{'Giỏ hàng':>10}{'Giỏ/View':>10}")
+    grand = defaultdict(int)
+    for day, c in rows:
+        rate = f"{c['add_to_cart'] / c['view'] * 100:.1f}%" if c["view"] else "-"
+        print(f"  {str(day):<12}{c['view']:>8,}{c['click']:>8,}{c['add_to_cart']:>10,}{rate:>10}")
+        for k, v in c.items():
+            grand[k] += v
+    rate = f"{grand['add_to_cart'] / grand['view'] * 100:.1f}%" if grand["view"] else "-"
+    print(f"  {'TỔNG':<12}{grand['view']:>8,}{grand['click']:>8,}{grand['add_to_cart']:>10,}{rate:>10}")
+
+
+def menu_user_sessions(svc):
+    user_id = ask("User ID", "U0001")
+    day = parse_day(ask("Ngày (YYYY-MM-DD, Enter = hôm nay)"))
+    sessions = svc.user_sessions(user_id, day)
+    print(f"\n[Cassandra] Các phiên truy cập của {user_id} ngày {day} ({len(sessions)} phiên, mới nhất trước)")
+    if not sessions:
+        print("  (không có dữ liệu)")
+        return
+    print(f"  {'Bắt đầu':<20}{'Kéo dài':>9}{'Sự kiện':>9}{'View':>6}{'Giỏ':>5}  {'Thiết bị':<9}Session")
+    for s in sessions:
+        print(f"  {fmt_time(s['start']):<20}{str(s['seconds']) + 's':>9}{s['events']:>9}{s['views']:>6}"
+              f"{s['carts']:>5}  {s['device']:<9}{s['session_id']}")
+
+
 MENU = """
 ================ CLICKSTREAM QUERY TOOL ================
  1. 5 sản phẩm khách hàng vừa xem gần nhất        (Redis)
@@ -244,6 +323,8 @@ MENU = """
  5. Từ khóa tìm kiếm phổ biến theo ngày           (Cassandra)
  6. Tổng quan số sự kiện đã ghi (theo ngày/loại)  (Cassandra)
  7. Đếm chính xác số hàng bảng events_by_user     (Cassandra)
+ 8. Xu hướng tương tác của sản phẩm theo ngày     (Cassandra)
+ 9. Các phiên truy cập của khách hàng trong ngày  (Cassandra)
  0. Thoát
 ========================================================"""
 
@@ -252,7 +333,8 @@ def main():
     svc = ClickstreamQuery()
     actions = {"1": menu_recent, "2": menu_history, "3": menu_session,
                "4": menu_products, "5": menu_keywords,
-               "6": menu_overview, "7": menu_exact_count}
+               "6": menu_overview, "7": menu_exact_count,
+               "8": menu_product_trend, "9": menu_user_sessions}
     try:
         while True:
             print(MENU)
