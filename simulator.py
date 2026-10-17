@@ -1,26 +1,15 @@
 """
-simulator.py - Giả lập website TMĐT sinh sự kiện clickstream và ghi vào hệ thống.
-
-Hai chế độ:
-  1) BULK (mặc định): sinh và ghi hàng loạt --events sự kiện (mặc định 1.000.000) rải trong --days ngày.
-     Ghi bất đồng bộ (execute_concurrent), gộp counter theo lô, cập nhật Redis theo lô -> rất nhanh.
-  2) REALTIME (--realtime): mô phỏng lưu lượng trực tiếp, mỗi sự kiện ghi ngay (LOGGED BATCH).
-
-Mỗi sự kiện được ghi vào:
-  - Cassandra: events_by_user + events_by_session (2 hàng), và bảng counter thống kê
-  - Redis    : chỉ với sự kiện 'view' -> giữ 5 sản phẩm xem gần nhất của user
-
-Ví dụ:
-  python simulator.py --reset                          # 1.000.000 sự kiện, 1000 user, 7 ngày
-  python simulator.py --reset --events 2000000 --users 5000
-  python simulator.py --realtime --delay 0.5           # luồng trực tiếp, Ctrl+C để dừng
+simulator.py - Giả lập website TMĐT sinh sự kiện clickstream và ghi vào hệ thống (GUI version).
 """
-import argparse
 import random
 import time
 import uuid
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+import queue
 
 from cassandra.concurrent import execute_concurrent
 from cassandra.query import UNSET_VALUE, BatchStatement, BatchType
@@ -43,7 +32,6 @@ DEVICES = ["mobile", "desktop", "tablet"]
 DEVICE_WEIGHTS = [60, 35, 5]
 
 PRODUCT_IDS = list(PRODUCTS)
-# Độ phổ biến giảm dần để thống kê "top sản phẩm" có ý nghĩa
 POPULARITY = {pid: 1 / (i + 1) ** 0.7 for i, pid in enumerate(PRODUCT_IDS)}
 POOL_BY_CATEGORY = {c: [p for p in PRODUCT_IDS if PRODUCTS[p][1] == c] for c in CATEGORIES}
 
@@ -58,11 +46,10 @@ def pick_product(category):
 
 
 def with_retry(fn, attempts=5):
-    """Thử lại khi Cassandra quá tải tạm thời (timeout...). Insert là idempotent nên thử lại an toàn."""
     for i in range(1, attempts + 1):
         try:
             return fn()
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             if i == attempts:
                 raise
             wait = 2 * i
@@ -74,10 +61,6 @@ def with_retry(fn, attempts=5):
 # 1. Sinh hành vi người dùng
 # ---------------------------------------------------------------------------
 def generate_session(user_id, start):
-    """Sinh danh sách sự kiện của một phiên truy cập.
-
-    Hành trình mẫu: (search | mở trang danh mục) -> click sản phẩm -> view -> (add_to_cart)
-    """
     session_id = uuid.uuid4()
     device = random.choices(DEVICES, DEVICE_WEIGHTS)[0]
     events = []
@@ -100,20 +83,20 @@ def generate_session(user_id, start):
             "device": device,
         })
 
-    for _ in range(random.randint(1, 4)):  # số lượt "tìm - xem" trong một phiên
+    for _ in range(random.randint(1, 4)):
         if random.random() < 0.5:
             keyword = random.choice(list(KEYWORDS))
             category = KEYWORDS[keyword]
             list_url = "/search?q=" + keyword.replace(" ", "+")
             emit("search", list_url, keyword=keyword)
-        else:  # mở trang danh mục (không phát sinh sự kiện riêng)
+        else:
             category = random.choice(CATEGORIES)
             list_url = f"/category/{category}"
 
-        for _ in range(random.randint(1, 3)):  # xem 1-3 sản phẩm trong danh sách
+        for _ in range(random.randint(1, 3)):
             pid = pick_product(category)
-            emit("click", list_url, product_id=pid)           # click vào thẻ sản phẩm
-            emit("view", f"/product/{pid}", product_id=pid)   # mở trang chi tiết
+            emit("click", list_url, product_id=pid)
+            emit("view", f"/product/{pid}", product_id=pid)
             if random.random() < 0.25:
                 emit("add_to_cart", f"/product/{pid}", product_id=pid,
                      quantity=random.randint(1, 2))
@@ -130,14 +113,13 @@ class Writer:
     def __init__(self, cass, rds):
         self.cass = cass
         self.rds = rds
-        self.count = 0  # số sự kiện đã ghi
+        self.count = 0
 
         marks = ", ".join(["?"] * len(self.COLUMNS.split(",")))
         self.ins_user = cass.prepare(
             f"INSERT INTO events_by_user ({self.COLUMNS}) VALUES ({marks})")
         self.ins_session = cass.prepare(
             f"INSERT INTO events_by_session ({self.COLUMNS}) VALUES ({marks})")
-        # Counter nhận số gia tăng n để có thể cộng dồn cả lô trong một lệnh
         self.cnt_product = cass.prepare(
             "UPDATE product_stats_by_day SET cnt = cnt + ? "
             "WHERE event_date = ? AND product_id = ? AND event_type = ?")
@@ -147,13 +129,12 @@ class Writer:
 
     @staticmethod
     def _params(ev):
-        # Trường rỗng dùng UNSET_VALUE thay vì None để không sinh tombstone trong Cassandra
         def v(x):
             return UNSET_VALUE if x is None else x
 
         return (
             ev["user_id"],
-            to_vn(ev["event_time"]).date(),     # event_date: bucket theo ngày giờ VN
+            to_vn(ev["event_time"]).date(),
             ev["event_time"],
             ev["event_id"],
             ev["session_id"],
@@ -166,37 +147,31 @@ class Writer:
             ev["device"],
         )
 
-    # ----- Ghi từng sự kiện (realtime) -----
     def write(self, ev):
         params = self._params(ev)
         day = params[1]
 
-        # (1) Ghi trùng vào 2 bảng log bằng LOGGED BATCH để 2 bảng luôn nhất quán
         batch = BatchStatement(batch_type=BatchType.LOGGED)
         batch.add(self.ins_user, params)
         batch.add(self.ins_session, params)
         self.cass.execute(batch)
 
-        # (2) Bảng thống kê (counter không được trộn chung batch với bảng thường)
         if ev["product_id"]:
             self.cass.execute(self.cnt_product, (1, day, ev["product_id"], ev["event_type"]))
         if ev["event_type"] == "search":
             self.cass.execute(self.cnt_keyword, (1, day, ev["search_keyword"]))
 
-        # (3) Redis: chỉ sự kiện 'view'
         if ev["event_type"] == "view":
             score = int(ev["event_time"].timestamp() * 1000)
             self._update_recent({ev["user_id"]: {ev["product_id"]: score}})
 
         self.count += 1
 
-    # ----- Ghi theo lô (bulk) -----
     def write_chunk(self, events, concurrency=64):
-        """Ghi một lô sự kiện: insert bất đồng bộ + gộp counter + cập nhật Redis một lần."""
         statements = []
         product_cnt = Counter()
         keyword_cnt = Counter()
-        recent = defaultdict(dict)  # user_id -> {product_id: score lớn nhất trong lô}
+        recent = defaultdict(dict)
 
         for ev in events:
             params = self._params(ev)
@@ -213,12 +188,9 @@ class Writer:
                 if score > views.get(ev["product_id"], 0):
                     views[ev["product_id"]] = score
 
-        # Insert idempotent (cùng khóa chính, cùng giá trị) nên thử lại an toàn
         with_retry(lambda: execute_concurrent(
             self.cass, statements, concurrency=concurrency, raise_on_first_error=True))
 
-        # Counter: cộng dồn cả lô -> chỉ vài chục lệnh thay vì hàng nghìn lệnh "+1"
-        # (Counter không idempotent: nếu timeout mơ hồ rồi thử lại có thể lệch rất nhỏ.)
         for (day, pid, etype), n in product_cnt.items():
             with_retry(lambda: self.cass.execute(self.cnt_product, (n, day, pid, etype)))
         for (day, kw), n in keyword_cnt.items():
@@ -227,131 +199,349 @@ class Writer:
         self._update_recent(recent)
         self.count += len(events)
 
-    # ----- Redis: 5 sản phẩm xem gần nhất -----
     def _update_recent(self, recent_by_user):
         pipe = self.rds.pipeline(transaction=False)
         for user_id, views in recent_by_user.items():
             key = recent_views_key(user_id)
             top = dict(sorted(views.items(), key=lambda kv: kv[1], reverse=True)[:RECENT_VIEW_LIMIT])
-            # GT: chỉ cập nhật score nếu mới hơn (an toàn khi dữ liệu đến trễ / ghi lô)
             pipe.zadd(key, top, gt=True)
-            # Cắt bớt, chỉ giữ RECENT_VIEW_LIMIT phần tử có score lớn nhất
             pipe.zremrangebyrank(key, 0, -(RECENT_VIEW_LIMIT + 1))
             pipe.expire(key, RECENT_VIEW_TTL)
         pipe.execute()
 
-
 # ---------------------------------------------------------------------------
-# 3. Hai chế độ chạy
+# Các hàm tiện ích cho GUI
 # ---------------------------------------------------------------------------
-def run_bulk(writer, users, total, days, chunk, concurrency):
-    """Sinh và ghi đúng `total` sự kiện, rải đều trong `days` ngày gần nhất."""
-    now = utcnow()
-    buffer, produced = [], 0
-    started = time.time()
-
-    while produced < total:
-        start = now - timedelta(seconds=random.uniform(1800, days * 86400))
-        events = generate_session(random.choice(users), start)[: total - produced]
-        buffer.extend(events)
-        produced += len(events)
-
-        if len(buffer) >= chunk or produced >= total:
-            writer.write_chunk(buffer, concurrency)
-            buffer = []
-            elapsed = max(time.time() - started, 1e-6)
-            rate = writer.count / elapsed
-            eta = (total - writer.count) / rate if rate else 0
-            print(f"  {writer.count:>10,}/{total:,} sự kiện ({writer.count / total:6.1%}) "
-                  f"| {rate:,.0f} sự kiện/s | còn khoảng {eta / 60:4.1f} phút", end="\r", flush=True)
-    print()
-
-
-def log_event(ev):
-    when = to_vn(ev["event_time"]).strftime("%H:%M:%S")
-    detail = ""
-    if ev["product_id"]:
-        detail = f"{ev['product_id']} {PRODUCTS[ev['product_id']][0]}"
-    elif ev["search_keyword"]:
-        detail = f"\"{ev['search_keyword']}\""
-    print(f"[{when}] {ev['user_id']}  {ev['event_type']:<12} {detail}")
-
-
-def run_realtime(writer, users, n_sessions, delay, active_sessions):
-    """Giả lập lưu lượng trực tiếp: nhiều phiên diễn ra xen kẽ, timestamp = thời điểm thật."""
-    limit = n_sessions if n_sessions > 0 else float("inf")
-    active, started = [], 0
-    while started < limit or active:
-        while started < limit and len(active) < active_sessions:
-            active.append(deque(generate_session(random.choice(users), utcnow())))
-            started += 1
-        queue = random.choice(active)
-        ev = queue.popleft()
-        ev["event_time"] = utcnow()
-        writer.write(ev)
-        log_event(ev)
-        if not queue:
-            active.remove(queue)
-        time.sleep(random.uniform(0, delay))
-
-
-def reset_all(cass, rds):
+def reset_all_data(cass, rds):
     for table in CASSANDRA_TABLES:
         cass.execute(f"TRUNCATE {table}")
     for key in rds.scan_iter("user:*:recent_views"):
         rds.delete(key)
-    print("Đã xóa dữ liệu cũ trong Cassandra và Redis.")
+
+# ---------------------------------------------------------------------------
+# Lớp giao diện chính
+# ---------------------------------------------------------------------------
+class SimulatorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Giả Lập Dữ Liệu Clickstream TMĐT")
+        self.root.geometry("600x700")
+
+        # Cấu hình grid
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        # Main frame
+        self.main_frame = ttk.Frame(root, padding="10")
+        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.main_frame.columnconfigure(1, weight=1)
+
+        # Variables
+        self.var_users = tk.IntVar(value=1000)
+        self.var_reset = tk.BooleanVar(value=False)
+        self.var_seed = tk.StringVar(value="")
+        
+        self.var_mode = tk.StringVar(value="bulk") # "bulk" or "realtime"
+
+        # Bulk vars
+        self.var_events = tk.IntVar(value=1000000)
+        self.var_days = tk.IntVar(value=7)
+        self.var_chunk = tk.IntVar(value=5000)
+        self.var_concurrency = tk.IntVar(value=64)
+
+        # Realtime vars
+        self.var_sessions = tk.IntVar(value=0)
+        self.var_delay = tk.DoubleVar(value=0.5)
+        self.var_active_sessions = tk.IntVar(value=5)
+
+        # Threading support
+        self.is_running = False
+        self.worker_thread = None
+        self.stop_event = threading.Event()
+        self.msg_queue = queue.Queue()
+
+        self.create_widgets()
+        self.root.after(100, self.process_queue)
+
+    def create_widgets(self):
+        row = 0
+
+        # General Settings
+        ttk.Label(self.main_frame, text="Cài đặt chung", font=("Helvetica", 12, "bold")).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+        row += 1
+
+        ttk.Label(self.main_frame, text="Số người dùng (users):").grid(row=row, column=0, sticky=tk.W)
+        ttk.Entry(self.main_frame, textvariable=self.var_users).grid(row=row, column=1, sticky=(tk.W, tk.E))
+        row += 1
+
+        ttk.Label(self.main_frame, text="Seed (tùy chọn):").grid(row=row, column=0, sticky=tk.W)
+        ttk.Entry(self.main_frame, textvariable=self.var_seed).grid(row=row, column=1, sticky=(tk.W, tk.E))
+        row += 1
+
+        ttk.Checkbutton(self.main_frame, text="Xóa sạch dữ liệu cũ trước khi chạy (Reset)", variable=self.var_reset).grid(row=row, column=0, columnspan=2, sticky=tk.W)
+        row += 1
+        
+        ttk.Separator(self.main_frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
+        row+=1
+
+        # Mode Selection
+        ttk.Label(self.main_frame, text="Chế độ chạy", font=("Helvetica", 12, "bold")).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+        row += 1
+
+        mode_frame = ttk.Frame(self.main_frame)
+        mode_frame.grid(row=row, column=0, columnspan=2, sticky=tk.W)
+        ttk.Radiobutton(mode_frame, text="Chế độ BULK (Ghi hàng loạt)", variable=self.var_mode, value="bulk", command=self.update_ui_state).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(mode_frame, text="Chế độ REALTIME", variable=self.var_mode, value="realtime", command=self.update_ui_state).pack(side=tk.LEFT, padx=5)
+        row += 1
+
+        # Bulk Settings
+        self.bulk_frame = ttk.LabelFrame(self.main_frame, text="Cài đặt BULK", padding="10")
+        self.bulk_frame.grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        self.bulk_frame.columnconfigure(1, weight=1)
+        row += 1
+
+        ttk.Label(self.bulk_frame, text="Tổng sự kiện (events):").grid(row=0, column=0, sticky=tk.W)
+        self.entry_events = ttk.Entry(self.bulk_frame, textvariable=self.var_events)
+        self.entry_events.grid(row=0, column=1, sticky=(tk.W, tk.E))
+
+        ttk.Label(self.bulk_frame, text="Số ngày (days):").grid(row=1, column=0, sticky=tk.W)
+        self.entry_days = ttk.Entry(self.bulk_frame, textvariable=self.var_days)
+        self.entry_days.grid(row=1, column=1, sticky=(tk.W, tk.E))
+
+        ttk.Label(self.bulk_frame, text="Sự kiện mỗi lô (chunk):").grid(row=2, column=0, sticky=tk.W)
+        self.entry_chunk = ttk.Entry(self.bulk_frame, textvariable=self.var_chunk)
+        self.entry_chunk.grid(row=2, column=1, sticky=(tk.W, tk.E))
+
+        ttk.Label(self.bulk_frame, text="Số luồng ghi (concurrency):").grid(row=3, column=0, sticky=tk.W)
+        self.entry_concurrency = ttk.Entry(self.bulk_frame, textvariable=self.var_concurrency)
+        self.entry_concurrency.grid(row=3, column=1, sticky=(tk.W, tk.E))
+
+        # Realtime Settings
+        self.realtime_frame = ttk.LabelFrame(self.main_frame, text="Cài đặt REALTIME", padding="10")
+        self.realtime_frame.grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        self.realtime_frame.columnconfigure(1, weight=1)
+        row += 1
+
+        ttk.Label(self.realtime_frame, text="Số phiên (sessions, 0=chạy mãi):").grid(row=0, column=0, sticky=tk.W)
+        self.entry_sessions = ttk.Entry(self.realtime_frame, textvariable=self.var_sessions)
+        self.entry_sessions.grid(row=0, column=1, sticky=(tk.W, tk.E))
+
+        ttk.Label(self.realtime_frame, text="Độ trễ tối đa (delay):").grid(row=1, column=0, sticky=tk.W)
+        self.entry_delay = ttk.Entry(self.realtime_frame, textvariable=self.var_delay)
+        self.entry_delay.grid(row=1, column=1, sticky=(tk.W, tk.E))
+
+        ttk.Label(self.realtime_frame, text="Phiên đồng thời (active_sessions):").grid(row=2, column=0, sticky=tk.W)
+        self.entry_active = ttk.Entry(self.realtime_frame, textvariable=self.var_active_sessions)
+        self.entry_active.grid(row=2, column=1, sticky=(tk.W, tk.E))
+
+        # Control Buttons
+        btn_frame = ttk.Frame(self.main_frame)
+        btn_frame.grid(row=row, column=0, columnspan=2, pady=15)
+        row += 1
+
+        self.btn_start = ttk.Button(btn_frame, text="Bắt đầu", command=self.start_simulation)
+        self.btn_start.pack(side=tk.LEFT, padx=5)
+
+        self.btn_stop = ttk.Button(btn_frame, text="Dừng", command=self.stop_simulation, state=tk.DISABLED)
+        self.btn_stop.pack(side=tk.LEFT, padx=5)
+
+        # Log Text Area
+        ttk.Label(self.main_frame, text="Nhật ký chạy:").grid(row=row, column=0, sticky=tk.W)
+        row += 1
+        
+        self.text_log = tk.Text(self.main_frame, height=10, width=60, state=tk.DISABLED)
+        self.text_log.grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Scrollbar cho Text
+        scrollbar = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.text_log.yview)
+        scrollbar.grid(row=row, column=2, sticky=(tk.N, tk.S))
+        self.text_log['yscrollcommand'] = scrollbar.set
+
+        self.main_frame.rowconfigure(row, weight=1) # Cho phép log area mở rộng
+        
+        self.update_ui_state()
+
+    def update_ui_state(self):
+        mode = self.var_mode.get()
+        if mode == "bulk":
+            self.enable_children(self.bulk_frame)
+            self.disable_children(self.realtime_frame)
+        else:
+            self.disable_children(self.bulk_frame)
+            self.enable_children(self.realtime_frame)
+
+    def enable_children(self, parent):
+        for child in parent.winfo_children():
+            child.configure(state=tk.NORMAL)
+
+    def disable_children(self, parent):
+        for child in parent.winfo_children():
+            child.configure(state=tk.DISABLED)
+
+    def log_message(self, message):
+        self.msg_queue.put(("log", message))
+
+    def process_queue(self):
+        try:
+            while True:
+                msg_type, msg = self.msg_queue.get_nowait()
+                if msg_type == "log":
+                    self.text_log.configure(state=tk.NORMAL)
+                    self.text_log.insert(tk.END, msg + "\n")
+                    self.text_log.see(tk.END)
+                    self.text_log.configure(state=tk.DISABLED)
+                elif msg_type == "done":
+                    self.is_running = False
+                    self.btn_start.configure(state=tk.NORMAL)
+                    self.btn_stop.configure(state=tk.DISABLED)
+                    messagebox.showinfo("Thông báo", "Giả lập hoàn tất!")
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_queue)
+
+    def start_simulation(self):
+        if self.is_running:
+            return
+
+        # Đọc tham số
+        try:
+            users_count = self.var_users.get()
+            if users_count <= 0: raise ValueError("Số người dùng phải lớn hơn 0")
+            
+            seed_val = self.var_seed.get()
+            if seed_val:
+                random.seed(int(seed_val))
+
+            mode = self.var_mode.get()
+        except ValueError as e:
+            messagebox.showerror("Lỗi đầu vào", str(e))
+            return
+
+        self.is_running = True
+        self.stop_event.clear()
+        self.btn_start.configure(state=tk.DISABLED)
+        self.btn_stop.configure(state=tk.NORMAL)
+        
+        self.text_log.configure(state=tk.NORMAL)
+        self.text_log.delete(1.0, tk.END)
+        self.text_log.configure(state=tk.DISABLED)
+
+        self.worker_thread = threading.Thread(target=self.run_simulation_task, args=(users_count, mode))
+        self.worker_thread.daemon = True
+        self.worker_thread.start()
+
+    def stop_simulation(self):
+        if self.is_running:
+            self.log_message("Đang yêu cầu dừng giả lập...")
+            self.stop_event.set()
+
+    def run_simulation_task(self, users_count, mode):
+        cass = None
+        writer = None
+        started_at = time.time()
+        try:
+            self.log_message("Đang kết nối CSDL...")
+            cass = connect_cassandra(KEYSPACE)
+            rds = connect_redis()
+            users = [f"U{i:04d}" for i in range(1, users_count + 1)]
+
+            if self.var_reset.get():
+                self.log_message("Đang xóa dữ liệu cũ...")
+                reset_all_data(cass, rds)
+                self.log_message("Đã xóa dữ liệu cũ.")
+
+            writer = Writer(cass, rds)
+
+            if mode == "bulk":
+                events = self.var_events.get()
+                days = self.var_days.get()
+                chunk = self.var_chunk.get()
+                concurrency = self.var_concurrency.get()
+                
+                self.log_message(f"Bắt đầu chạy BULK: {events:,} sự kiện, {len(users)} users, trong {days} ngày...")
+                self._run_bulk_with_stop(writer, users, events, days, chunk, concurrency)
+            else:
+                sessions = self.var_sessions.get()
+                delay = self.var_delay.get()
+                active = self.var_active_sessions.get()
+                
+                self.log_message(f"Bắt đầu chạy REALTIME: {len(users)} users...")
+                self._run_realtime_with_stop(writer, users, sessions, delay, active)
+
+        except Exception as e:
+            self.log_message(f"Lỗi: {e}")
+        finally:
+            if writer:
+                elapsed = max(time.time() - started_at, 1e-6)
+                msg = f"Đã ghi {writer.count:,} sự kiện trong {elapsed:.1f}s ({writer.count / elapsed:,.0f} sự kiện/giây)."
+                self.log_message(msg)
+            if cass:
+                cass.cluster.shutdown()
+            self.msg_queue.put(("done", ""))
+
+    def _run_bulk_with_stop(self, writer, users, total, days, chunk, concurrency):
+        now = utcnow()
+        buffer, produced = [], 0
+        started = time.time()
+
+        while produced < total and not self.stop_event.is_set():
+            start = now - timedelta(seconds=random.uniform(1800, days * 86400))
+            events = generate_session(random.choice(users), start)[: total - produced]
+            buffer.extend(events)
+            produced += len(events)
+
+            if len(buffer) >= chunk or produced >= total:
+                writer.write_chunk(buffer, concurrency)
+                buffer = []
+                elapsed = max(time.time() - started, 1e-6)
+                rate = writer.count / elapsed
+                eta = (total - writer.count) / rate if rate else 0
+                
+                status_msg = f"{writer.count:>10,}/{total:,} sự kiện ({writer.count / total:6.1%}) | {rate:,.0f} sự kiện/s | còn khoảng {eta / 60:4.1f} phút"
+                # Update log without filling it up too fast for bulk
+                if produced % (chunk * 5) < chunk:
+                    self.log_message(status_msg)
+
+    def _run_realtime_with_stop(self, writer, users, n_sessions, delay, active_sessions):
+        limit = n_sessions if n_sessions > 0 else float("inf")
+        active, started = [], 0
+        while (started < limit or active) and not self.stop_event.is_set():
+            while started < limit and len(active) < active_sessions:
+                active.append(deque(generate_session(random.choice(users), utcnow())))
+                started += 1
+            if not active:
+                break
+                
+            queue = random.choice(active)
+            ev = queue.popleft()
+            ev["event_time"] = utcnow()
+            writer.write(ev)
+            
+            # Format log message
+            when = to_vn(ev["event_time"]).strftime("%H:%M:%S")
+            detail = ""
+            if ev["product_id"]:
+                detail = f"{ev['product_id']} {PRODUCTS[ev['product_id']][0]}"
+            elif ev["search_keyword"]:
+                detail = f"\"{ev['search_keyword']}\""
+            log_str = f"[{when}] {ev['user_id']}  {ev['event_type']:<12} {detail}"
+            self.log_message(log_str)
+            
+            if not queue:
+                active.remove(queue)
+                
+            if delay > 0:
+                # Ngủ ngắt quãng để phản hồi stop_event nhanh hơn
+                sleep_time = random.uniform(0, delay)
+                end_sleep = time.time() + sleep_time
+                while time.time() < end_sleep and not self.stop_event.is_set():
+                    time.sleep(0.05)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Giả lập ghi dữ liệu clickstream TMĐT")
-    parser.add_argument("--events", type=int, default=1_000_000,
-                        help="(bulk) tổng số sự kiện cần ghi, mặc định 1.000.000")
-    parser.add_argument("--users", type=int, default=1000, help="số người dùng giả lập (tối đa 9999)")
-    parser.add_argument("--days", type=int, default=7, help="(bulk) rải dữ liệu trong N ngày gần nhất")
-    parser.add_argument("--chunk", type=int, default=5000, help="(bulk) số sự kiện mỗi lô ghi")
-    parser.add_argument("--concurrency", type=int, default=64,
-                        help="(bulk) số lệnh ghi chạy song song tới Cassandra")
-    parser.add_argument("--realtime", action="store_true", help="ghi theo thời gian thực")
-    parser.add_argument("--sessions", type=int, default=0,
-                        help="(realtime) số phiên truy cập, 0 = chạy mãi")
-    parser.add_argument("--delay", type=float, default=0.5,
-                        help="(realtime) độ trễ tối đa giữa 2 sự kiện (giây)")
-    parser.add_argument("--active-sessions", type=int, default=5,
-                        help="(realtime) số phiên diễn ra đồng thời")
-    parser.add_argument("--reset", action="store_true", help="xóa sạch dữ liệu cũ trước khi chạy")
-    parser.add_argument("--seed", type=int, help="seed để lặp lại cùng một kịch bản")
-    args = parser.parse_args()
-
-    if args.seed is not None:
-        random.seed(args.seed)
-
-    cass = connect_cassandra(KEYSPACE)
-    rds = connect_redis()
-    users = [f"U{i:04d}" for i in range(1, args.users + 1)]
-    started_at = time.time()
-    writer = None
-
-    try:
-        if args.reset:
-            reset_all(cass, rds)
-        writer = Writer(cass, rds)
-        if args.realtime:
-            print(f"Giả lập REALTIME với {len(users)} người dùng (Ctrl+C để dừng)...")
-            run_realtime(writer, users, args.sessions, args.delay, args.active_sessions)
-        else:
-            print(f"Giả lập BULK: {args.events:,} sự kiện, {len(users)} người dùng, "
-                  f"rải trong {args.days} ngày...")
-            run_bulk(writer, users, args.events, args.days, args.chunk, args.concurrency)
-    except KeyboardInterrupt:
-        print("\nĐã dừng theo yêu cầu.")
-    finally:
-        if writer:
-            elapsed = max(time.time() - started_at, 1e-6)
-            print(f"Đã ghi {writer.count:,} sự kiện ({writer.count * 2:,} hàng log trong Cassandra) "
-                  f"trong {elapsed:.1f}s ({writer.count / elapsed:,.0f} sự kiện/giây).")
-        cass.cluster.shutdown()
-
+    root = tk.Tk()
+    app = SimulatorGUI(root)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
