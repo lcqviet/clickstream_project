@@ -38,17 +38,17 @@ TEAL = "#0F6E56"
 # Biểu đồ cột ngang vẽ bằng Canvas (không cần thư viện ngoài)
 # ---------------------------------------------------------------------------
 class BarChart(tk.Canvas):
-    ROW = 24
+    ROW = 32
 
     def __init__(self, master, color="#1D9E75"):
-        super().__init__(master, background="white", highlightthickness=1,
-                         highlightbackground="#D0D7DE", height=60)
+        super().__init__(master, background="#FFFFFF", highlightthickness=1,
+                         highlightbackground="#DEE2E6", height=80)
         self.color, self.items, self.title = color, [], ""
         self.bind("<Configure>", lambda _e: self._draw())
 
     def set_data(self, items, title=""):
         self.items, self.title = items, title
-        self.configure(height=40 + self.ROW * max(len(items), 1))
+        self.configure(height=50 + self.ROW * max(len(items), 1))
         self._draw()
 
     def _draw(self):
@@ -56,20 +56,20 @@ class BarChart(tk.Canvas):
         width = self.winfo_width()
         if width < 120:
             return
-        self.create_text(10, 16, text=self.title, anchor="w", font=FONT_BOLD, fill="#24292F")
+        self.create_text(15, 20, text=self.title, anchor="w", font=FONT_BOLD, fill="#212529")
         if not self.items:
-            self.create_text(10, 48, text="(không có dữ liệu)", anchor="w", font=FONT, fill="#888888")
+            self.create_text(15, 55, text="(không có dữ liệu)", anchor="w", font=FONT, fill="#6C757D")
             return
-        label_w = 240
+        label_w = 260
         top = max(v for _, v in self.items) or 1
-        bar_max = max(width - label_w - 100, 60)
+        bar_max = max(width - label_w - 120, 60)
         for i, (label, value) in enumerate(self.items):
-            y = 36 + i * self.ROW
-            text = label if len(label) <= 34 else label[:33] + "…"
-            self.create_text(label_w - 8, y + 11, text=text, anchor="e", font=FONT, fill="#24292F")
+            y = 45 + i * self.ROW
+            text = label if len(label) <= 36 else label[:35] + "…"
+            self.create_text(label_w - 12, y + 16, text=text, anchor="e", font=FONT, fill="#212529")
             bar = max(2, int(bar_max * value / top))
-            self.create_rectangle(label_w, y + 3, label_w + bar, y + 19, fill=self.color, outline="")
-            self.create_text(label_w + bar + 6, y + 11, text=f"{value:,}", anchor="w", font=FONT, fill="#24292F")
+            self.create_rectangle(label_w, y + 4, label_w + bar, y + 26, fill=self.color, outline="", width=0)
+            self.create_text(label_w + bar + 10, y + 16, text=f"{value:,}", anchor="w", font=FONT, fill="#212529")
 
 
 def guarded(fn):
@@ -90,16 +90,18 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Hệ thống lưu vết hành vi người dùng - Truy vấn Clickstream")
-        self.geometry("1180x740")
-        self.minsize(980, 620)
+        self.geometry("1280x800")
+        self.minsize(1024, 720)
+        self.configure(bg="#FFFFFF")
         self.svc = None
         self._jobs = queue.Queue()
 
         self._setup_style()
         self._build_header()
-        self._build_status()  # tạo trước để luôn nằm dưới cùng
+        self._build_status()  
+        
         self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self.nb.pack(fill="both", expand=True, padx=12, pady=(12, 0))
         for build in (self._tab_recent, self._tab_history, self._tab_session, self._tab_products,
                       self._tab_keywords, self._tab_overview, self._tab_count,
                       self._tab_trend, self._tab_sessions):
@@ -109,35 +111,54 @@ class App(tk.Tk):
         self.after(100, self._poll)
         self._connect()
 
+    # ----- Hàm sinh danh sách User -----
+    def get_user_list(self):
+        """Hàm sinh danh sách mã khách hàng gợi ý, gọi độc lập ở các tính năng cần thiết."""
+        return [f"U{i:04d}" for i in range(1, 1001)]
+
     # ----- giao diện chung -----
     def _setup_style(self):
         style = ttk.Style(self)
-        for theme in ("vista", "clam"):
+        for theme in ("clam", "vista"):
             if theme in style.theme_names():
                 style.theme_use(theme)
                 break
-        style.configure(".", font=FONT)
-        style.configure("Treeview", rowheight=26, font=FONT)
-        style.configure("Treeview.Heading", font=FONT_BOLD)
-        style.configure("TNotebook.Tab", padding=(12, 6), font=FONT)
-        style.configure("Big.TLabel", font=("Segoe UI", 22, "bold"), foreground=TEAL)
-        style.configure("Hint.TLabel", foreground="#57606A")
+                
+        bg_color = "#FFFFFF"
+        alt_bg = "#F8F9FA"
+        fg_color = "#212529"
+        
+        style.configure(".", font=FONT, background=bg_color, foreground=fg_color)
+        style.configure("TFrame", background=bg_color)
+        
+        style.configure("Treeview", rowheight=32, font=FONT, borderwidth=0, background=bg_color, fieldbackground=bg_color)
+        style.configure("Treeview.Heading", font=FONT_BOLD, background="#E9ECEF", foreground=fg_color, padding=6)
+        style.map("Treeview", background=[("selected", TEAL)], foreground=[("selected", "white")])
+        
+        style.configure("TNotebook", background=alt_bg, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(16, 10), font=FONT_BOLD, background="#DEE2E6")
+        style.map("TNotebook.Tab", background=[("selected", bg_color)], foreground=[("selected", TEAL)])
+        
+        style.configure("Big.TLabel", font=("Segoe UI", 24, "bold"), foreground=TEAL, background=bg_color)
+        style.configure("Hint.TLabel", foreground="#6C757D", font=("Segoe UI", 9, "italic"), background=bg_color)
+        style.configure("TButton", font=FONT_BOLD, padding=5)
 
     def _build_header(self):
-        bar = tk.Frame(self, background=TEAL)
+        bar = tk.Frame(self, background=TEAL, height=80)
         bar.pack(fill="x")
-        tk.Label(bar, text="HỆ THỐNG LƯU VẾT HÀNH VI NGƯỜI DÙNG TRÊN WEBSITE TMĐT", bg=TEAL, fg="white",
-                 font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=14, pady=(10, 0))
-        tk.Label(bar, text="Truy vấn dữ liệu Clickstream  |  Cassandra (log đầy đủ)  +  Redis (5 sản phẩm vừa xem)",
-                 bg=TEAL, fg="#CFEDE2", font=FONT).pack(anchor="w", padx=14, pady=(0, 10))
+        tk.Label(bar, text="HỆ THỐNG LƯU VẾT HÀNH VI NGƯỜI DÙNG", bg=TEAL, fg="white",
+                 font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=20, pady=(15, 2))
+        tk.Label(bar, text="Trình quản lý & Truy vấn Clickstream  |  Cassandra (log đầy đủ) & Redis (truy xuất nhanh)",
+                 bg=TEAL, fg="#CFEDE2", font=("Segoe UI", 11)).pack(anchor="w", padx=20, pady=(0, 15))
+        ttk.Separator(self).pack(fill="x")
 
     def _build_status(self):
-        bar = ttk.Frame(self, padding=(10, 4))
+        bar = ttk.Frame(self, padding=(15, 5))
         bar.pack(side="bottom", fill="x")
-        self.status = ttk.Label(bar, text="")
+        self.status = ttk.Label(bar, text="", font=("Segoe UI", 9))
         self.status.pack(side="left")
         self.reconnect_btn = ttk.Button(bar, text="Kết nối lại", command=self._connect)
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=140)
+        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=180)
         self.progress.pack(side="right")
 
     def set_status(self, text, busy=False, error=False):
@@ -146,8 +167,10 @@ class App(tk.Tk):
             self.progress.start(12)
         else:
             self.progress.stop()
+            
+    def _update_status(self, text):
+        self.set_status(text, busy=True)
 
-    # ----- chạy truy vấn ở luồng nền -----
     def run_async(self, work, done, on_error=None):
         if self.svc is None:
             messagebox.showwarning("Chưa kết nối", "Chương trình chưa kết nối được tới cơ sở dữ liệu.", parent=self)
@@ -156,11 +179,19 @@ class App(tk.Tk):
 
         def target():
             start = time.time()
-            try:
-                result = work()
-                self._jobs.put((done, on_error, result, None, time.time() - start))
-            except BaseException as err:  # noqa: BLE001 - kể cả SystemExit từ hàm kết nối
-                self._jobs.put((done, on_error, None, err, time.time() - start))
+            attempts = 3
+            for attempt in range(1, attempts + 1):
+                try:
+                    result = work()
+                    self._jobs.put((done, on_error, result, None, time.time() - start))
+                    return
+                except BaseException as err:
+                    err_name = type(err).__name__
+                    if attempt < attempts and err_name in ('ReadTimeout', 'OperationTimedOut', 'Timeout'):
+                        self._jobs.put((self._update_status, None, f"Hệ thống đang chịu tải nặng, thử lại ({attempt}/{attempts})...", None, 0))
+                        time.sleep(2) 
+                        continue
+                    self._jobs.put((done, on_error, None, err, time.time() - start))
 
         threading.Thread(target=target, daemon=True).start()
 
@@ -183,7 +214,6 @@ class App(tk.Tk):
     def _default_error(self, err):
         messagebox.showerror("Lỗi truy vấn", str(err) or type(err).__name__, parent=self)
 
-    # ----- kết nối -----
     def _connect(self):
         self.reconnect_btn.pack_forget()
         self.set_status("Đang kết nối Cassandra và Redis (tối đa khoảng 60 giây nếu Docker vừa khởi động)...", busy=True)
@@ -191,13 +221,20 @@ class App(tk.Tk):
         def target():
             try:
                 self._jobs.put((self._on_connected, self._on_connect_failed, ClickstreamQuery(), None, 0))
-            except BaseException as err:  # noqa: BLE001
+            except BaseException as err:  
                 self._jobs.put((self._on_connected, self._on_connect_failed, None, err, 0))
 
         threading.Thread(target=target, daemon=True).start()
 
     def _on_connected(self, svc):
         self.svc = svc
+        try:
+            if hasattr(self.svc, 'session'):
+                self.svc.session.default_timeout = 60.0
+            elif hasattr(self.svc, 'cass'):
+                self.svc.cass.default_timeout = 60.0
+        except Exception:
+            pass
         self.set_status(f"Đã kết nối: Cassandra {CASSANDRA_HOSTS[0]}:{CASSANDRA_PORT}   |   Redis {REDIS_HOST}:{REDIS_PORT}")
 
     def _on_connect_failed(self, err):
@@ -216,30 +253,34 @@ class App(tk.Tk):
 
     # ----- tiện ích dựng form -----
     def _tab(self, title):
-        frame = ttk.Frame(self.nb, padding=12)
+        frame = ttk.Frame(self.nb, padding=16)
         self.nb.add(frame, text=title)
         return frame
 
     @staticmethod
     def _row(parent):
         row = ttk.Frame(parent)
-        row.pack(fill="x", pady=(0, 8))
+        row.pack(fill="x", pady=(0, 16))
         return row
 
     @staticmethod
-    def _field(row, label, var, width=14, kind="entry", values=None, lo=1, hi=999999):
-        ttk.Label(row, text=label).pack(side="left", padx=(0, 6))
+    def _field(row, label, var, width=15, kind="entry", values=None, lo=1, hi=999999):
+        """Hỗ trợ kind='user' (Combobox có thể nhập tay) và kind='combo' (Combobox chỉ đọc)"""
+        ttk.Label(row, text=label, font=FONT_BOLD).pack(side="left", padx=(0, 8))
+        
         if kind == "combo":
-            w = ttk.Combobox(row, textvariable=var, values=values, width=width, state="readonly")
+            w = ttk.Combobox(row, textvariable=var, values=values, width=width, state="readonly", font=FONT)
+        elif kind == "user":
+            w = ttk.Combobox(row, textvariable=var, values=values, width=width, font=FONT)
         elif kind == "spin":
-            w = ttk.Spinbox(row, textvariable=var, from_=lo, to=hi, width=width)
+            w = ttk.Spinbox(row, textvariable=var, from_=lo, to=hi, width=width, font=FONT)
         else:
-            w = ttk.Entry(row, textvariable=var, width=width)
-        w.pack(side="left", padx=(0, 16))
+            w = ttk.Entry(row, textvariable=var, width=width, font=FONT)
+            
+        w.pack(side="left", padx=(0, 24))
         return w
 
-    def _tree(self, parent, columns, expand=True, height=10):
-        """columns: [(id, tiêu đề, độ rộng, canh lề)]"""
+    def _tree(self, parent, columns, expand=True, height=12):
         box = ttk.Frame(parent)
         box.pack(fill="both" if expand else "x", expand=expand)
         tree = ttk.Treeview(box, columns=[c[0] for c in columns], show="headings", height=height)
@@ -254,7 +295,8 @@ class App(tk.Tk):
         xsb.grid(row=1, column=0, sticky="ew")
         box.rowconfigure(0, weight=1)
         box.columnconfigure(0, weight=1)
-        tree.tag_configure("odd", background="#F3F7F6")
+        tree.tag_configure("odd", background="#F8F9FA")
+        tree.tag_configure("even", background="#FFFFFF")
         tree.tag_configure("total", font=FONT_BOLD, background="#DCEFE8")
         return tree
 
@@ -262,12 +304,11 @@ class App(tk.Tk):
     def _fill(tree, rows, total_last=False):
         tree.delete(*tree.get_children())
         for i, row in enumerate(rows):
-            tag = "total" if total_last and i == len(rows) - 1 else ("odd" if i % 2 else "")
+            tag = "total" if total_last and i == len(rows) - 1 else ("odd" if i % 2 else "even")
             tree.insert("", "end", values=row, tags=(tag,))
 
     @staticmethod
     def _sort(tree, col):
-        """Nhấp vào tiêu đề cột để sắp xếp (tăng/giảm dần)."""
         def key(v):
             try:
                 return (0, float(v.replace(",", "").replace("%", "")))
@@ -280,7 +321,6 @@ class App(tk.Tk):
         for index, (_, k) in enumerate(items):
             tree.move(k, "", index)
 
-    # ----- đọc dữ liệu nhập -----
     @staticmethod
     def _read_int(var, name, lo, hi):
         try:
@@ -302,16 +342,22 @@ class App(tk.Tk):
     # Chức năng 1: 5 sản phẩm vừa xem (Redis)
     # =====================================================================
     def _tab_recent(self):
-        tab = self._tab("1. Sản phẩm vừa xem (Redis)")
+        tab = self._tab("1. SP Vừa Xem (Redis)")
         self.v_recent_user = tk.StringVar(value="U0001")
         row = self._row(tab)
-        entry = self._field(row, "Mã khách hàng:", self.v_recent_user)
+        
+        # Truyền danh sách user vào ô Combobox bằng hàm get_user_list
+        users = self.get_user_list()
+        entry = self._field(row, "Mã khách hàng:", self.v_recent_user, 15, kind="user", values=users)
         entry.bind("<Return>", lambda _e: self.do_recent())
-        ttk.Button(row, text="Truy vấn", command=self.do_recent).pack(side="left")
-        self.l_recent = ttk.Label(tab, text="Nguồn: Redis Sorted Set  user:{id}:recent_views  (ZREVRANGE 0 4)", style="Hint.TLabel")
-        self.l_recent.pack(anchor="w", pady=(0, 8))
-        self.t_recent = self._tree(tab, [("rank", "Hạng", 60, "center"), ("pid", "Mã SP", 90, "center"),
-                                         ("name", "Tên sản phẩm", 380, "w"), ("when", "Thời điểm xem gần nhất", 200, "center")])
+        
+        ttk.Button(row, text="Truy vấn", command=self.do_recent).pack(side="left", padx=10)
+        
+        self.l_recent = ttk.Label(tab, text="Nguồn: Redis Sorted Set user:{id}:recent_views (ZREVRANGE 0 4)", style="Hint.TLabel")
+        self.l_recent.pack(anchor="w", pady=(0, 10))
+        
+        self.t_recent = self._tree(tab, [("rank", "Hạng", 70, "center"), ("pid", "Mã SP", 100, "center"),
+                                         ("name", "Tên sản phẩm", 400, "w"), ("when", "Thời điểm xem gần nhất", 220, "center")])
 
     @guarded
     def do_recent(self):
@@ -335,24 +381,31 @@ class App(tk.Tk):
     # Chức năng 2: lịch sử hành vi (Cassandra)
     # =====================================================================
     def _tab_history(self):
-        tab = self._tab("2. Lịch sử hành vi")
+        tab = self._tab("2. Lịch Sử Hành Vi")
         self.v_h_user = tk.StringVar(value="U0001")
         self.v_h_days = tk.StringVar(value="1")
         self.v_h_type = tk.StringVar(value="Tất cả")
         self.v_h_limit = tk.StringVar(value="50")
+        
         row = self._row(tab)
-        entry = self._field(row, "Mã khách hàng:", self.v_h_user, 12)
+        # Truyền danh sách user vào ô Combobox
+        users = self.get_user_list()
+        entry = self._field(row, "Mã khách hàng:", self.v_h_user, 15, kind="user", values=users)
         entry.bind("<Return>", lambda _e: self.do_history())
+        
         self._field(row, "Số ngày gần nhất:", self.v_h_days, 5, "spin", lo=1, hi=60)
         self._field(row, "Loại sự kiện:", self.v_h_type, 12, "combo", values=["Tất cả"] + sorted(EVENT_TYPES))
         self._field(row, "Số dòng tối đa:", self.v_h_limit, 6, "spin", lo=1, hi=1000)
-        ttk.Button(row, text="Truy vấn", command=self.do_history).pack(side="left")
-        self.l_history = ttk.Label(tab, text="Nguồn: bảng events_by_user.  Nhấp đúp vào một dòng để xem hành trình của phiên đó.",
+        
+        ttk.Button(row, text="Truy vấn", command=self.do_history).pack(side="left", padx=10)
+        
+        self.l_history = ttk.Label(tab, text="Nguồn: bảng events_by_user. Nhấp đúp vào một dòng để xem hành trình của phiên đó.",
                                    style="Hint.TLabel")
-        self.l_history.pack(anchor="w", pady=(0, 8))
-        self.t_history = self._tree(tab, [("time", "Thời gian", 150, "center"), ("type", "Sự kiện", 100, "center"),
-                                          ("detail", "Chi tiết", 300, "w"), ("url", "Trang", 190, "w"),
-                                          ("device", "Thiết bị", 80, "center"), ("session", "Session ID", 290, "w")])
+        self.l_history.pack(anchor="w", pady=(0, 10))
+        
+        self.t_history = self._tree(tab, [("time", "Thời gian", 160, "center"), ("type", "Sự kiện", 110, "center"),
+                                          ("detail", "Chi tiết", 320, "w"), ("url", "Trang", 210, "w"),
+                                          ("device", "Thiết bị", 90, "center"), ("session", "Session ID", 300, "w")])
         self.t_history.bind("<Double-1>", self._history_open_session)
 
     @guarded
@@ -385,18 +438,21 @@ class App(tk.Tk):
     # Chức năng 3: hành trình phiên (Cassandra)
     # =====================================================================
     def _tab_session(self):
-        tab = self.tab_session = self._tab("3. Hành trình phiên")
+        tab = self.tab_session = self._tab("3. Hành Trình Phiên")
         self.v_s_id = tk.StringVar()
+        
         row = self._row(tab)
-        entry = self._field(row, "Session ID:", self.v_s_id, 48)
+        entry = self._field(row, "Session ID:", self.v_s_id, 45)
         entry.bind("<Return>", lambda _e: self.do_session())
-        ttk.Button(row, text="Truy vấn", command=self.do_session).pack(side="left")
-        self.l_session = ttk.Label(tab, text="Nguồn: bảng events_by_session.  Dán Session ID lấy từ tab 2, hoặc nhấp đúp ở tab 2.",
+        ttk.Button(row, text="Truy vấn", command=self.do_session).pack(side="left", padx=10)
+        
+        self.l_session = ttk.Label(tab, text="Nguồn: bảng events_by_session. Dán Session ID lấy từ tab 2, hoặc nhấp đúp ở tab 2.",
                                    style="Hint.TLabel")
-        self.l_session.pack(anchor="w", pady=(0, 8))
-        self.t_session = self._tree(tab, [("n", "#", 50, "center"), ("time", "Thời gian", 160, "center"),
-                                          ("type", "Sự kiện", 110, "center"), ("detail", "Chi tiết", 360, "w"),
-                                          ("url", "Trang", 240, "w")])
+        self.l_session.pack(anchor="w", pady=(0, 10))
+        
+        self.t_session = self._tree(tab, [("n", "#", 50, "center"), ("time", "Thời gian", 170, "center"),
+                                          ("type", "Sự kiện", 120, "center"), ("detail", "Chi tiết", 380, "w"),
+                                          ("url", "Trang", 260, "w")])
 
     @guarded
     def do_session(self):
@@ -411,8 +467,8 @@ class App(tk.Tk):
                 self.l_session.configure(text="Không tìm thấy phiên này.")
                 return
             seconds = int((rows[-1].event_time - rows[0].event_time).total_seconds())
-            self.l_session.configure(text=f"Khách hàng {rows[0].user_id}  |  thiết bị {rows[0].device}  |  "
-                                          f"{len(rows)} sự kiện  |  kéo dài {seconds} giây")
+            self.l_session.configure(text=f"Khách hàng {rows[0].user_id}  |  Thiết bị: {rows[0].device}  |  "
+                                          f"{len(rows)} sự kiện  |  Kéo dài {seconds} giây")
             self._fill(self.t_session, [(i, fmt_time(r.event_time), r.event_type, describe(r), r.page_url)
                                         for i, r in enumerate(rows, 1)])
 
@@ -422,22 +478,25 @@ class App(tk.Tk):
     # Chức năng 4: thống kê sản phẩm theo ngày (Cassandra)
     # =====================================================================
     def _tab_products(self):
-        tab = self._tab("4. Thống kê sản phẩm")
+        tab = self._tab("4. Thống Kê Sản Phẩm")
         self.v_p_day = tk.StringVar(value=str(today_vn()))
         self.v_p_top = tk.StringVar(value="10")
+        
         row = self._row(tab)
-        entry = self._field(row, "Ngày (YYYY-MM-DD):", self.v_p_day, 12)
-        entry.bind("<Return>", lambda _e: self.do_products())
-        self._field(row, "Hiển thị top:", self.v_p_top, 5, "spin", lo=1, hi=100)
-        ttk.Button(row, text="Truy vấn", command=self.do_products).pack(side="left")
-        ttk.Label(tab, text="Nguồn: bảng counter product_stats_by_day.  Nhấp vào tiêu đề cột để sắp xếp.",
-                  style="Hint.TLabel").pack(anchor="w", pady=(0, 8))
-        self.t_products = self._tree(tab, [("rank", "Hạng", 60, "center"), ("pid", "Mã SP", 80, "center"),
-                                           ("name", "Sản phẩm", 320, "w"), ("view", "View", 90, "e"),
-                                           ("click", "Click", 90, "e"), ("cart", "Giỏ hàng", 100, "e"),
-                                           ("rate", "Giỏ/View", 100, "e")], height=8)
+        # Sử dụng ô nhập liệu chuẩn
+        self._field(row, "Ngày (YYYY-MM-DD):", self.v_p_day, 14, kind="entry")
+        self._field(row, "Hiển thị top:", self.v_p_top, 6, "spin", lo=1, hi=100)
+        ttk.Button(row, text="Truy vấn", command=self.do_products).pack(side="left", padx=10)
+        
+        ttk.Label(tab, text="Nguồn: bảng counter product_stats_by_day. Nhấp vào tiêu đề cột để sắp xếp.",
+                  style="Hint.TLabel").pack(anchor="w", pady=(0, 10))
+                  
+        self.t_products = self._tree(tab, [("rank", "Hạng", 70, "center"), ("pid", "Mã SP", 90, "center"),
+                                           ("name", "Sản phẩm", 340, "w"), ("view", "View", 100, "e"),
+                                           ("click", "Click", 100, "e"), ("cart", "Giỏ hàng", 110, "e"),
+                                           ("rate", "Giỏ/View", 110, "e")], height=7)
         self.c_products = BarChart(tab)
-        self.c_products.pack(fill="x", pady=(10, 0))
+        self.c_products.pack(fill="x", pady=(15, 0))
 
     @guarded
     def do_products(self):
@@ -463,19 +522,20 @@ class App(tk.Tk):
     # Chức năng 5: từ khóa tìm kiếm (Cassandra)
     # =====================================================================
     def _tab_keywords(self):
-        tab = self._tab("5. Từ khóa tìm kiếm")
+        tab = self._tab("5. Từ Khóa Tìm Kiếm")
         self.v_k_day = tk.StringVar(value=str(today_vn()))
         self.v_k_top = tk.StringVar(value="10")
+        
         row = self._row(tab)
-        entry = self._field(row, "Ngày (YYYY-MM-DD):", self.v_k_day, 12)
-        entry.bind("<Return>", lambda _e: self.do_keywords())
-        self._field(row, "Hiển thị top:", self.v_k_top, 5, "spin", lo=1, hi=100)
-        ttk.Button(row, text="Truy vấn", command=self.do_keywords).pack(side="left")
-        ttk.Label(tab, text="Nguồn: bảng counter keyword_stats_by_day.", style="Hint.TLabel").pack(anchor="w", pady=(0, 8))
-        self.t_keywords = self._tree(tab, [("rank", "Hạng", 60, "center"), ("kw", "Từ khóa", 360, "w"),
-                                           ("cnt", "Số lượt tìm", 120, "e")], height=8)
+        self._field(row, "Ngày (YYYY-MM-DD):", self.v_k_day, 14, kind="entry")
+        self._field(row, "Hiển thị top:", self.v_k_top, 6, "spin", lo=1, hi=100)
+        ttk.Button(row, text="Truy vấn", command=self.do_keywords).pack(side="left", padx=10)
+        
+        ttk.Label(tab, text="Nguồn: bảng counter keyword_stats_by_day.", style="Hint.TLabel").pack(anchor="w", pady=(0, 10))
+        self.t_keywords = self._tree(tab, [("rank", "Hạng", 70, "center"), ("kw", "Từ khóa", 380, "w"),
+                                           ("cnt", "Số lượt tìm", 140, "e")], height=7)
         self.c_keywords = BarChart(tab, color="#D85A30")
-        self.c_keywords.pack(fill="x", pady=(10, 0))
+        self.c_keywords.pack(fill="x", pady=(15, 0))
 
     @guarded
     def do_keywords(self):
@@ -492,21 +552,23 @@ class App(tk.Tk):
         self.run_async(lambda: self.svc.keyword_stats(day), done)
 
     # =====================================================================
-    # Chức năng 6: tổng quan số sự kiện (Cassandra, từ các bảng counter)
+    # Chức năng 6: tổng quan số sự kiện (Cassandra)
     # =====================================================================
     def _tab_overview(self):
-        tab = self._tab("6. Tổng quan sự kiện")
+        tab = self._tab("6. Tổng Quan Sự Kiện")
         self.v_o_days = tk.StringVar(value="8")
+        
         row = self._row(tab)
-        self._field(row, "Số ngày gần nhất:", self.v_o_days, 5, "spin", lo=1, hi=60)
-        ttk.Button(row, text="Truy vấn", command=self.do_overview).pack(side="left")
+        self._field(row, "Số ngày gần nhất:", self.v_o_days, 6, "spin", lo=1, hi=60)
+        ttk.Button(row, text="Truy vấn", command=self.do_overview).pack(side="left", padx=10)
+        
         ttk.Label(tab, text="Cộng từ các bảng counter, kết quả tức thì. Dữ liệu rải 7 ngày thì nhập 8 để bao đủ các ngày.",
-                  style="Hint.TLabel").pack(anchor="w", pady=(0, 8))
-        self.t_overview = self._tree(tab, [("day", "Ngày", 130, "center"), ("click", "click", 110, "e"),
-                                           ("view", "view", 110, "e"), ("cart", "add_to_cart", 120, "e"),
-                                           ("search", "search", 110, "e"), ("total", "Tổng", 130, "e")], height=9)
+                  style="Hint.TLabel").pack(anchor="w", pady=(0, 10))
+        self.t_overview = self._tree(tab, [("day", "Ngày", 140, "center"), ("click", "click", 120, "e"),
+                                           ("view", "view", 120, "e"), ("cart", "add_to_cart", 130, "e"),
+                                           ("search", "search", 120, "e"), ("total", "Tổng", 140, "e")], height=8)
         self.c_overview = BarChart(tab, color="#378ADD")
-        self.c_overview.pack(fill="x", pady=(10, 0))
+        self.c_overview.pack(fill="x", pady=(15, 0))
 
     @guarded
     def do_overview(self):
@@ -535,19 +597,22 @@ class App(tk.Tk):
     # Chức năng 7: đếm chính xác số hàng events_by_user (Cassandra)
     # =====================================================================
     def _tab_count(self):
-        tab = self._tab("7. Đếm chính xác số hàng")
+        tab = self._tab("7. Đếm Chính Xác Hàng")
         self.v_c_users = tk.StringVar(value="1000")
         self.v_c_days = tk.StringVar(value="8")
+        
         row = self._row(tab)
         self._field(row, "Số user đã giả lập:", self.v_c_users, 8, "spin", lo=1, hi=9999)
-        self._field(row, "Số ngày cần quét:", self.v_c_days, 5, "spin", lo=1, hi=60)
-        ttk.Button(row, text="Đếm", command=self.do_count).pack(side="left")
+        self._field(row, "Số ngày cần quét:", self.v_c_days, 6, "spin", lo=1, hi=60)
+        ttk.Button(row, text="Đếm", command=self.do_count).pack(side="left", padx=10)
+        
         ttk.Label(tab, text="Đếm từng partition (user, ngày) của bảng events_by_user rồi cộng lại, "
-                            "tránh COUNT(*) toàn bảng dễ bị timeout.", style="Hint.TLabel").pack(anchor="w", pady=(0, 24))
+                            "tránh COUNT(*) toàn bảng dễ bị timeout.", style="Hint.TLabel").pack(anchor="w", pady=(0, 30))
+                            
         self.l_count = ttk.Label(tab, text="—", style="Big.TLabel")
-        self.l_count.pack(anchor="w")
+        self.l_count.pack(anchor="w", pady=(10, 0))
         self.l_count_note = ttk.Label(tab, text="", style="Hint.TLabel")
-        self.l_count_note.pack(anchor="w", pady=(6, 0))
+        self.l_count_note.pack(anchor="w", pady=(10, 0))
 
     @guarded
     def do_count(self):
@@ -560,7 +625,7 @@ class App(tk.Tk):
             total, partitions = res
             self.l_count.configure(text=f"{total:,} hàng")
             self.l_count_note.configure(
-                text=f"events_by_user (quét {partitions:,} partition).  events_by_session lưu cùng số hàng này.")
+                text=f"events_by_user (quét {partitions:,} partition). events_by_session lưu cùng số hàng này.")
 
         def failed(err):
             self.l_count.configure(text="—")
@@ -572,22 +637,25 @@ class App(tk.Tk):
     # Chức năng 8: xu hướng tương tác của một sản phẩm theo ngày (Cassandra)
     # =====================================================================
     def _tab_trend(self):
-        tab = self._tab("8. Xu hướng SP")
+        tab = self._tab("8. Xu Hướng SP")
         choices = [f"{pid} - {info[0]}" for pid, info in PRODUCTS.items()]
         self.v_t_prod = tk.StringVar(value=choices[0])
         self.v_t_days = tk.StringVar(value="8")
+        
         row = self._row(tab)
-        self._field(row, "Sản phẩm:", self.v_t_prod, 34, "combo", values=choices)
-        self._field(row, "Số ngày gần nhất:", self.v_t_days, 5, "spin", lo=1, hi=60)
-        ttk.Button(row, text="Truy vấn", command=self.do_trend).pack(side="left")
-        ttk.Label(tab, text="Nguồn: bảng counter product_stats_by_day (khóa event_date + product_id).  "
-                            "Dữ liệu rải 7 ngày thì nhập 8 để bao đủ các ngày.",
-                  style="Hint.TLabel").pack(anchor="w", pady=(0, 8))
-        self.t_trend = self._tree(tab, [("day", "Ngày", 130, "center"), ("view", "View", 100, "e"),
-                                        ("click", "Click", 100, "e"), ("cart", "Giỏ hàng", 110, "e"),
-                                        ("rate", "Giỏ/View", 110, "e")], height=9)
+        self._field(row, "Sản phẩm:", self.v_t_prod, 38, "combo", values=choices)
+        self._field(row, "Số ngày gần nhất:", self.v_t_days, 6, "spin", lo=1, hi=60)
+        ttk.Button(row, text="Truy vấn", command=self.do_trend).pack(side="left", padx=10)
+        
+        ttk.Label(tab, text="Nguồn: bảng counter product_stats_by_day (khóa event_date + product_id). "
+                            "Dữ liệu rải 7 ngày thì nhập 8 để bao đủ.",
+                  style="Hint.TLabel").pack(anchor="w", pady=(0, 10))
+                  
+        self.t_trend = self._tree(tab, [("day", "Ngày", 140, "center"), ("view", "View", 110, "e"),
+                                        ("click", "Click", 110, "e"), ("cart", "Giỏ hàng", 120, "e"),
+                                        ("rate", "Giỏ/View", 120, "e")], height=8)
         self.c_trend = BarChart(tab, color="#7F77DD")
-        self.c_trend.pack(fill="x", pady=(10, 0))
+        self.c_trend.pack(fill="x", pady=(15, 0))
 
     @guarded
     def do_trend(self):
@@ -619,26 +687,31 @@ class App(tk.Tk):
         self.run_async(lambda: self.svc.product_trend(pid, days), done)
 
     # =====================================================================
-    # Chức năng 9: các phiên truy cập của một khách hàng trong ngày (Cassandra)
+    # Chức năng 9: các phiên truy cập của một khách hàng trong ngày
     # =====================================================================
     def _tab_sessions(self):
-        tab = self._tab("9. Phiên khách hàng")
+        tab = self._tab("9. Phiên Khách Hàng")
         self.v_u_user = tk.StringVar(value="U0001")
         self.v_u_day = tk.StringVar(value=str(today_vn()))
+        
         row = self._row(tab)
-        entry = self._field(row, "Mã khách hàng:", self.v_u_user, 12)
-        entry.bind("<Return>", lambda _e: self.do_sessions())
-        entry = self._field(row, "Ngày (YYYY-MM-DD):", self.v_u_day, 12)
-        entry.bind("<Return>", lambda _e: self.do_sessions())
-        ttk.Button(row, text="Truy vấn", command=self.do_sessions).pack(side="left")
-        self.l_sessions = ttk.Label(tab, text="Nguồn: bảng events_by_user (khóa user_id + event_date), gom theo session_id.  "
+        # Truyền danh sách user vào ô Combobox
+        users = self.get_user_list()
+        entry1 = self._field(row, "Mã khách hàng:", self.v_u_user, 15, kind="user", values=users)
+        entry1.bind("<Return>", lambda _e: self.do_sessions())
+        
+        self._field(row, "Ngày (YYYY-MM-DD):", self.v_u_day, 14, kind="entry")
+        ttk.Button(row, text="Truy vấn", command=self.do_sessions).pack(side="left", padx=10)
+        
+        self.l_sessions = ttk.Label(tab, text="Nguồn: bảng events_by_user (khóa user_id + event_date), gom theo session_id. "
                                               "Nhấp đúp vào một dòng để xem hành trình của phiên đó.",
                                     style="Hint.TLabel")
-        self.l_sessions.pack(anchor="w", pady=(0, 8))
-        self.t_sessions = self._tree(tab, [("start", "Bắt đầu", 160, "center"), ("sec", "Kéo dài (giây)", 120, "e"),
-                                           ("events", "Số sự kiện", 100, "e"), ("views", "View", 70, "e"),
-                                           ("carts", "Giỏ hàng", 90, "e"), ("device", "Thiết bị", 80, "center"),
-                                           ("session", "Session ID", 290, "w")])
+        self.l_sessions.pack(anchor="w", pady=(0, 10))
+        
+        self.t_sessions = self._tree(tab, [("start", "Bắt đầu", 170, "center"), ("sec", "Kéo dài (giây)", 130, "e"),
+                                           ("events", "Số sự kiện", 110, "e"), ("views", "View", 80, "e"),
+                                           ("carts", "Giỏ hàng", 100, "e"), ("device", "Thiết bị", 90, "center"),
+                                           ("session", "Session ID", 310, "w")])
         self.t_sessions.bind("<Double-1>", self._sessions_open_session)
 
     @guarded
@@ -668,10 +741,10 @@ class App(tk.Tk):
 
 
 def main():
-    try:  # chữ sắc nét trên màn hình độ phân giải cao (Windows)
+    try:  
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:  # noqa: BLE001
+    except Exception: 
         pass
     App().mainloop()
 

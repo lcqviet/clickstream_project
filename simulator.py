@@ -239,6 +239,7 @@ class SimulatorGUI:
         # Variables
         self.var_users = tk.IntVar(value=1000)
         self.var_reset = tk.BooleanVar(value=False)
+        self.var_show_details = tk.BooleanVar(value=False)
         self.var_seed = tk.StringVar(value="")
         
         self.var_mode = tk.StringVar(value="bulk") # "bulk" or "realtime"
@@ -279,6 +280,9 @@ class SimulatorGUI:
         row += 1
 
         ttk.Checkbutton(self.main_frame, text="Xóa sạch dữ liệu cũ trước khi chạy (Reset)", variable=self.var_reset).grid(row=row, column=0, columnspan=2, sticky=tk.W)
+        row += 1
+        
+        ttk.Checkbutton(self.main_frame, text="Hiển thị chi tiết từng sự kiện vào log (sẽ làm chậm tốc độ giả lập)", variable=self.var_show_details).grid(row=row, column=0, columnspan=2, sticky=tk.W)
         row += 1
         
         ttk.Separator(self.main_frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
@@ -381,6 +385,15 @@ class SimulatorGUI:
     def log_message(self, message):
         self.msg_queue.put(("log", message))
 
+    def _format_event(self, ev):
+        when = to_vn(ev["event_time"]).strftime("%H:%M:%S")
+        detail = ""
+        if ev["product_id"]:
+            detail = f"{ev['product_id']} {PRODUCTS[ev['product_id']][0]}"
+        elif ev["search_keyword"]:
+            detail = f"\"{ev['search_keyword']}\""
+        return f"[{when}] {ev['user_id']}  {ev['event_type']:<12} {detail}"
+
     def process_queue(self):
         try:
             while True:
@@ -388,6 +401,12 @@ class SimulatorGUI:
                 if msg_type == "log":
                     self.text_log.configure(state=tk.NORMAL)
                     self.text_log.insert(tk.END, msg + "\n")
+                    
+                    # Giới hạn log tối đa 1000 dòng để không gây treo giao diện
+                    lines = int(self.text_log.index('end-1c').split('.')[0])
+                    if lines > 1000:
+                        self.text_log.delete('1.0', f'{lines - 1000}.0')
+                        
                     self.text_log.see(tk.END)
                     self.text_log.configure(state=tk.DISABLED)
                 elif msg_type == "done":
@@ -483,24 +502,37 @@ class SimulatorGUI:
         now = utcnow()
         buffer, produced = [], 0
         started = time.time()
+        show_details = self.var_show_details.get()
 
         while produced < total and not self.stop_event.is_set():
             start = now - timedelta(seconds=random.uniform(1800, days * 86400))
             events = generate_session(random.choice(users), start)[: total - produced]
+            
+            if show_details:
+                for ev in events:
+                    self.log_message(self._format_event(ev))
+                    
             buffer.extend(events)
             produced += len(events)
 
             if len(buffer) >= chunk or produced >= total:
                 writer.write_chunk(buffer, concurrency)
-                buffer = []
+                
                 elapsed = max(time.time() - started, 1e-6)
                 rate = writer.count / elapsed
                 eta = (total - writer.count) / rate if rate else 0
                 
-                status_msg = f"{writer.count:>10,}/{total:,} sự kiện ({writer.count / total:6.1%}) | {rate:,.0f} sự kiện/s | còn khoảng {eta / 60:4.1f} phút"
-                # Update log without filling it up too fast for bulk
-                if produced % (chunk * 5) < chunk:
+                status_msg = f"Tiến độ: {writer.count:>10,}/{total:,} sự kiện ({writer.count / total:6.1%}) | {rate:,.0f} s.kiện/s | còn ~{eta / 60:4.1f} phút"
+                
+                if show_details:
+                    self.log_message(f"--- Đã ghi xong lô {len(buffer)} sự kiện ---")
                     self.log_message(status_msg)
+                elif produced % (chunk * 5) < chunk:
+                    self.log_message(status_msg)
+                    if buffer:
+                        self.log_message(f"  [Mẫu đang ghi] {self._format_event(buffer[-1])}")
+                        
+                buffer = []
 
     def _run_realtime_with_stop(self, writer, users, n_sessions, delay, active_sessions):
         limit = n_sessions if n_sessions > 0 else float("inf")
@@ -517,21 +549,12 @@ class SimulatorGUI:
             ev["event_time"] = utcnow()
             writer.write(ev)
             
-            # Format log message
-            when = to_vn(ev["event_time"]).strftime("%H:%M:%S")
-            detail = ""
-            if ev["product_id"]:
-                detail = f"{ev['product_id']} {PRODUCTS[ev['product_id']][0]}"
-            elif ev["search_keyword"]:
-                detail = f"\"{ev['search_keyword']}\""
-            log_str = f"[{when}] {ev['user_id']}  {ev['event_type']:<12} {detail}"
-            self.log_message(log_str)
+            self.log_message(self._format_event(ev))
             
             if not queue:
                 active.remove(queue)
                 
             if delay > 0:
-                # Ngủ ngắt quãng để phản hồi stop_event nhanh hơn
                 sleep_time = random.uniform(0, delay)
                 end_sleep = time.time() + sleep_time
                 while time.time() < end_sleep and not self.stop_event.is_set():
