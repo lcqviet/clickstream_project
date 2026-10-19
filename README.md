@@ -28,8 +28,8 @@ pip install -r requirements.txt
 :: 3. Tạo keyspace và bảng
 python init_schema.py
 
-:: 4. Ghi 1.000.000 sự kiện (mặc định: 1000 user, rải 7 ngày)
-python simulator.py --reset
+:: 4. Giả lập ghi sự kiện
+python simulator.py
 
 :: 5. Truy vấn bằng giao diện đồ họa
 python query_gui.py
