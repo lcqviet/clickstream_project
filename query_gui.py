@@ -606,8 +606,8 @@ class App(tk.Tk):
         self._field(row, "Số ngày cần quét:", self.v_c_days, 6, "spin", lo=1, hi=60)
         ttk.Button(row, text="Đếm", command=self.do_count).pack(side="left", padx=10)
         
-        ttk.Label(tab, text="Đếm từng partition (user, ngày) của bảng events_by_user rồi cộng lại, "
-                            "tránh COUNT(*) toàn bảng dễ bị timeout.", style="Hint.TLabel").pack(anchor="w", pady=(0, 30))
+        #ttk.Label(tab, text="Đếm từng partition (user, ngày) của bảng events_by_user rồi cộng lại, "
+        #                    "tránh COUNT(*) toàn bảng dễ bị timeout.", style="Hint.TLabel").pack(anchor="w", pady=(0, 30))
                             
         self.l_count = ttk.Label(tab, text="—", style="Big.TLabel")
         self.l_count.pack(anchor="w", pady=(10, 0))

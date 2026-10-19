@@ -53,7 +53,7 @@ python simulator.py --reset --events 10000 --users 50                 :: chạy 
 Mỗi sự kiện tạo 2 hàng log (`events_by_user`, `events_by_session`), nên 1.000.000 sự kiện tương ứng 2.000.000 hàng trong Cassandra.
 Tốc độ ghi phụ thuộc cấu hình máy và Docker. Nếu gặp lỗi timeout, giảm `--concurrency` (ví dụ 32) hoặc tăng RAM cho Docker.
 
-## Chứng minh đã đủ 1.000.000 bản ghi
+## Kiểm tra tối thiểu 1.000.000 bản ghi
 
 Trong `python query_cli.py`:
 - Chức năng **6**: tổng số sự kiện theo ngày và loại (cộng từ bảng counter, kết quả tức thời).
