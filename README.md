@@ -9,8 +9,8 @@
 | `schema.cql` | Keyspace và 4 bảng Cassandra |
 | `init_schema.py` | Chạy `schema.cql` bằng Python (không cần cqlsh) |
 | `common.py` | Cấu hình, danh mục sản phẩm mẫu, hàm kết nối |
-| `simulator.py` | Giả lập website: ghi sự kiện vào Cassandra + Redis (chế độ bulk 1 triệu+ và realtime) |
-| `query_gui.py` | **Giao diện đồ họa (Tkinter)** để truy vấn dữ liệu, 7 tab tương ứng 7 chức năng |
+| `simulator.py` | Giả lập website: ghi sự kiện vào Cassandra + Redis (chế độ bulk + và realtime) |
+| `query_gui.py` | **Giao diện đồ họa (Tkinter)** để truy vấn dữ liệu |
 
 
 ## Cách chạy (Windows)
