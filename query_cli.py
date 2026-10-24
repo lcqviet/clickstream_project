@@ -43,9 +43,10 @@ class ClickstreamQuery:
         self.q_count_partition = self.cass.prepare(
             "SELECT COUNT(*) FROM events_by_user WHERE user_id = ? AND event_date = ?")
 
-        # Hai truy vấn bổ sung (Q7, Q8): đọc từ các bảng đã có, không thay đổi schema
+        
         self.q_product_one_day = self.cass.prepare(
             "SELECT event_type, cnt FROM product_stats_by_day WHERE event_date = ? AND product_id = ?")
+        
         self.q_user_sessions = self.cass.prepare(
             "SELECT session_id, event_time, event_type, device FROM events_by_user "
             "WHERE user_id = ? AND event_date = ?")

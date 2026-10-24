@@ -14,6 +14,8 @@ import queue
 from cassandra.concurrent import execute_concurrent
 from cassandra.query import UNSET_VALUE, BatchStatement, BatchType
 
+BATCH_ROWS = 10  # số hàng tối đa trong một batch cùng partition (giữ batch < 5 KB)
+
 from common import (
     CASSANDRA_TABLES,
     CATEGORIES,
@@ -173,11 +175,14 @@ class Writer:
         keyword_cnt = Counter()
         recent = defaultdict(dict)
 
+        by_user = defaultdict(list)     # (user_id, event_date) -> các hàng cùng partition
+        by_session = defaultdict(list)  # session_id -> các hàng cùng partition
+
         for ev in events:
             params = self._params(ev)
             day = params[1]
-            statements.append((self.ins_user, params))
-            statements.append((self.ins_session, params))
+            by_user[(params[0], params[1])].append(params)
+            by_session[params[4]].append(params)
             if ev["product_id"]:
                 product_cnt[(day, ev["product_id"], ev["event_type"])] += 1
             if ev["event_type"] == "search":
@@ -187,6 +192,16 @@ class Writer:
                 views = recent[ev["user_id"]]
                 if score > views.get(ev["product_id"], 0):
                     views[ev["product_id"]] = score
+
+        # Gộp các hàng CÙNG partition vào một UNLOGGED BATCH: số request giảm nhiều lần
+        # (một batch một partition là cách dùng batch đúng trong Cassandra).
+        for stmt, groups in ((self.ins_user, by_user), (self.ins_session, by_session)):
+            for rows in groups.values():
+                for i in range(0, len(rows), BATCH_ROWS):
+                    batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+                    for p in rows[i:i + BATCH_ROWS]:
+                        batch.add(stmt, p)
+                    statements.append((batch, None))
 
         with_retry(lambda: execute_concurrent(
             self.cass, statements, concurrency=concurrency, raise_on_first_error=True))

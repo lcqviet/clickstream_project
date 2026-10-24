@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Schema Cassandra: Hệ thống lưu vết hành vi người dùng (Clickstream)
--- Thiết kế theo truy vấn: mỗi truy vấn chính có một bảng riêng.
+-- 
 -- =====================================================================
 
 CREATE KEYSPACE IF NOT EXISTS ecommerce_tracking
@@ -10,7 +10,7 @@ WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
 -- ---------------------------------------------------------------------
 -- Q1: Lịch sử hành vi của một user theo thời gian (mới nhất trước)
 --     SELECT * FROM events_by_user WHERE user_id = 'U0001' AND event_date = '2026-10-11' LIMIT 20;
--- Partition = (user_id, event_date): chặn partition phình vô hạn.
+-- Partition = (user_id, event_date) 
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ecommerce_tracking.events_by_user (
     user_id         text,
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS ecommerce_tracking.events_by_user (
 -- ---------------------------------------------------------------------
 -- Q2: Hành trình clickstream trong một phiên truy cập (theo thứ tự thời gian)
 --     SELECT * FROM events_by_session WHERE session_id = <uuid>;
--- Một phiên chỉ có vài chục sự kiện nên partition luôn nhỏ.
+-- 
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ecommerce_tracking.events_by_session (
     session_id      uuid,
